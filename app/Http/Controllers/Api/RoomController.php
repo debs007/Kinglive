@@ -111,17 +111,22 @@ class RoomController extends Controller
         $viewerToken = $this->agora->generateToken(
             $room->agora_channel_id,
             $userId,
-            role: 'subscriber'
+            role: 'audience'
         );
+
+        // Use live Redis viewer count, not stale DB count
+        $liveViewerCount = $this->roomService->getViewerCount($roomId);
 
         return response()->json([
             'room'            => $room,
             'agora_token'     => $viewerToken,
             'agora_app_id'    => $this->agora->getAppId(),
-            'viewer_count'    => $this->roomService->getViewerCount($roomId),
+            'viewer_count'    => $liveViewerCount,
             'is_following'    => auth()->user()->isFollowing($room->host_user_id),
-            'current_user_id' => $userId,
-            'user_coin_balance' => auth()->user()->coin_balance,
+            'current_user_id'     => $userId,
+            'current_username'    => auth()->user()->username,
+            'current_user_avatar' => auth()->user()->avatar_url,
+            'user_coin_balance'   => auth()->user()->coin_balance,
         ]);
     }
 
@@ -146,7 +151,7 @@ class RoomController extends Controller
     {
         $room   = Room::findOrFail($roomId);
         $userId = auth()->id();
-        $role   = $room->host_user_id === $userId ? 'publisher' : 'subscriber';
+        $role   = $room->host_user_id === $userId ? 'broadcaster' : 'audience';
 
         return response()->json([
             'agora_token' => $this->agora->generateToken($room->agora_channel_id, $userId, $role),
@@ -155,7 +160,20 @@ class RoomController extends Controller
 
     public function heartbeat(string $roomId): JsonResponse
     {
-        $this->roomService->recordHeartbeat($roomId, auth()->id());
+        $userId = auth()->id();
+        $room   = Room::findOrFail($roomId);
+
+        $this->roomService->recordHeartbeat($roomId, $userId);
+
+        // If this is the host, update their specific heartbeat timestamp
+        // Used by CleanupStaleRoomsJob to detect disconnected hosts
+        if ($room->host_user_id === $userId) {
+            \Illuminate\Support\Facades\Redis::setex(
+                "room:{$roomId}:host_heartbeat",
+                300,          // auto-expire after 5 min (safety net)
+                time()
+            );
+        }
 
         return response()->json(['ok' => true]);
     }

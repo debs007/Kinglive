@@ -5,19 +5,21 @@
     "license": "MIT",
     "require": {
         "php": "^8.4",
-        "laravel/framework": "^11.0",
-        "laravel/octane": "^2.5",
-        "laravel/horizon": "^5.24",
-        "laravel/sanctum": "^4.0",
-        "tymon/jwt-auth": "^2.1",
-        "predis/predis": "^2.2",
-        "intervention/image": "^3.7",
-        "league/flysystem-aws-s3-v3": "^3.0",
         "aws/aws-sdk-php": "^3.0",
+        "cyberdeep/laravel-agora-token-generator": "^1.0",
+        "intervention/image": "^3.7",
+        "laravel/framework": "^11.0",
+        "laravel/horizon": "^5.24",
+        "laravel/octane": "^2.0",
+        "laravel/reverb": "^1.10",
+        "laravel/sanctum": "^4.0",
         "laravel/telescope": "^5.0",
+        "league/flysystem-aws-s3-v3": "^3.32",
+        "predis/predis": "^2.2",
+        "spatie/laravel-activitylog": "^4.7",
         "spatie/laravel-permission": "^6.0",
-        "spatie/laravel-activitylog": "^4.7"
-        
+        "tymon/jwt-auth": "^2.1",
+        "yasserbelhimer/agora-access-token-generator": "^1.0"
     },
     "require-dev": {
         "fakerphp/faker": "^1.23",

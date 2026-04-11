@@ -54,7 +54,17 @@ class EndPkSessionJob implements ShouldQueue
             'final_scores'    => [$roomA => $scoreA, $roomB => $scoreB],
         ]);
 
-        Redis::publish("broadcast:room:{$roomA}", $payload);
-        Redis::publish("broadcast:room:{$roomB}", $payload);
+        // Push pk.ended to both rooms via Redis pending broadcast
+        // The WS ping handler picks this up within 5 seconds
+        Redis::setex("room:{$roomA}:pending_broadcast", 120, $payload);
+        Redis::setex("room:{$roomB}:pending_broadcast", 120, $payload);
+
+        // Also push to a global list that the WS server checks on every message
+        Redis::lpush("ws:pending_broadcasts", json_encode([
+            'rooms'   => [$roomA, $roomB],
+            'payload' => $payload,
+            'expires' => time() + 120,
+        ]));
+        Redis::expire("ws:pending_broadcasts", 300);
     }
 }

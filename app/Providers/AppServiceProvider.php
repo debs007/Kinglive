@@ -33,5 +33,13 @@ class AppServiceProvider extends ServiceProvider
         Blade::directive('setting', function ($expression) {
             return "<?php echo \App\Models\Setting::get({$expression}); ?>";
         });
+        
+        // if (app()->bound(Server::class)) {
+        // $server = app(Server::class);
+
+        // $server->on('open',    [WebSocketHandler::class, 'onOpen']);
+        // $server->on('message', [WebSocketHandler::class, 'onMessage']);
+        // $server->on('close',   [WebSocketHandler::class, 'onClose']);
+    //}
     }
 }

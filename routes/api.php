@@ -7,6 +7,8 @@ use App\Http\Controllers\Api\RoomController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\WalletController;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Api\MediaController;
+use App\Http\Controllers\Api\NotificationController;
 
 /*
 |--------------------------------------------------------------------------
@@ -24,6 +26,8 @@ Route::prefix('v1')->group(function () {
         Route::post('otp/verify', [AuthController::class, 'verifyOtp']);
         Route::post('refresh',    [AuthController::class, 'refresh']);
     });
+    
+    
 
     // ── Authenticated ─────────────────────────────────────────────────────────
     Route::middleware(['api.auth', 'banned'])->group(function () {
@@ -35,6 +39,7 @@ Route::prefix('v1')->group(function () {
         Route::post  ('auth/device-token',  [AuthController::class, 'updateDeviceToken']);
 
         // Users
+        Route::get   ('users/followers',     [UserController::class, 'myFollowers']);
         Route::get   ('users/{id}',          [UserController::class, 'show']);
         Route::post  ('users/{id}/follow',   [UserController::class, 'follow']);
         Route::delete('users/{id}/follow',   [UserController::class, 'unfollow']);
@@ -69,5 +74,29 @@ Route::prefix('v1')->group(function () {
         Route::post  ('wallet/withdraw',         [WalletController::class, 'requestWithdrawal']);
         Route::get   ('wallet/transactions',     [WalletController::class, 'transactions']);
         Route::get   ('wallet/withdrawals',      [WalletController::class, 'withdrawalHistory']);
+        
+        // Notifications
+        Route::get   ('notifications',           [NotificationController::class, 'index']);
+        Route::get   ('notifications/unread',    [NotificationController::class, 'unreadCount']);
+        Route::post  ('notifications/read-all',  [NotificationController::class, 'markAllRead']);
+        Route::post  ('notifications/{id}/read', [NotificationController::class, 'markRead']);
+        Route::delete('notifications/{id}',      [NotificationController::class, 'destroy']);
+
+        // PK invite to user (not room)
+        Route::get   ('users/followers',          [UserController::class, 'myFollowers']);
+        Route::post  ('pk/invite',               [UserController::class, 'sendPkInvite']);
+        
+        //MediaController
+        // Avatar upload URL
+    Route::post('/media/avatar-upload-url', [MediaController::class, 'avatarUploadUrl']);
+
+    // Cover upload URL
+    Route::post('/media/cover-upload-url', [MediaController::class, 'coverUploadUrl']);
+
+    // Room thumbnail upload URL
+    Route::post('/media/thumbnail-upload-url', [MediaController::class, 'roomThumbnailUploadUrl']);
+
+    // Gift SVGA upload URL (admin only)
+    Route::post('/media/gift-upload-url', [MediaController::class, 'giftSvgaUploadUrl']);
     });
 });

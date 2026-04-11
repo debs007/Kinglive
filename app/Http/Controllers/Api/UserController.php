@@ -23,6 +23,17 @@ class UserController extends Controller
         ]);
     }
 
+    /** Get current user's followers (for PK invite list) */
+    public function myFollowers(): JsonResponse
+    {
+        $followers = auth()->user()
+            ->followers()
+            ->select('users.id', 'username', 'avatar_url', 'level')
+            ->paginate(50);
+
+        return response()->json($followers);
+    }
+
     public function follow(int $id): JsonResponse
     {
         $user = auth()->user();

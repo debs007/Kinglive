@@ -17,10 +17,13 @@ class User extends Authenticatable implements JWTSubject
 
     protected $fillable = [
         'username', 'email', 'phone', 'password',
-        'avatar_url', 'frame_url', 'display_name', 'bio',
-        'country_code', 'role', 'coin_balance', 'diamond_balance',
-        'level', 'xp', 'is_verified', 'is_active',
-        'last_seen_at', 'device_token',
+        'avatar_url', 'cover_url', 'frame_url', 'display_name', 'bio',
+        'country_code', 'role',
+        'coin_balance', 'diamond_balance',
+        'level', 'xp',
+        'is_verified', 'is_active',
+        'total_streams', 'total_diamonds_earned',
+        'last_seen_at', 'device_token', 'device_platform',
     ];
 
     protected $hidden = ['password', 'remember_token', 'device_token'];
@@ -137,6 +140,7 @@ class User extends Authenticatable implements JWTSubject
             'username'        => $this->username,
             'display_name'    => $this->display_name,
             'avatar_url'      => $this->avatar_url,
+            'cover_url'       => $this->cover_url ?? null,
             'frame_url'       => $this->frame_url,
             'bio'             => $this->bio,
             'level'           => $this->level,

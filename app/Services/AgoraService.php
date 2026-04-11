@@ -2,104 +2,70 @@
 
 namespace App\Services;
 
+use CyberDeep\LaravelAgoraTokenGenerator\Services\Agora;
 use Exception;
 
-/**
- * Agora RTC Token Generator (AccessToken2 spec).
- *
- * Install the official SDK:
- *   composer require agora/token-builder
- *
- * The static build methods below wrap the SDK. If you prefer not to use
- * the SDK, the manual HMAC-SHA256 implementation is included as a fallback.
- */
 class AgoraService
 {
     private string $appId;
-    private string $appCertificate;
-    private int    $tokenExpiry;
 
     public function __construct()
     {
-        $this->appId          = config('services.agora.app_id', '');
-        $this->appCertificate = config('services.agora.app_certificate', '');
-        $this->tokenExpiry    = (int) config('services.agora.token_expiry', 21600); // 6 h
+        $this->appId = config('agora.app_id', env('AGORA_APP_ID', ''));
     }
 
     /**
-     * Generate an Agora RTC channel token.
+     * Generate Agora RTC token using cyberdeep/laravel-agora-token-generator.
      *
-     * @param  string  $channelName  The Agora channel name
-     * @param  int     $uid          Numeric user ID (0 = wildcard)
-     * @param  string  $role         'publisher' | 'subscriber'
+     * @param  string  $channelName   Agora channel name
+     * @param  int     $uid           User ID
+     * @param  string  $role          'broadcaster' | 'audience'
+     * @param  bool    $audioOnly     true = audio only, false = video+audio
      */
-    public function generateToken(string $channelName, int $uid, string $role = 'publisher'): string
-    {
-        if (empty($this->appId) || empty($this->appCertificate)) {
-            throw new Exception('Agora App ID or Certificate is not configured.');
-        }
+    public function generateToken(
+        string $channelName,
+        int    $uid,
+        string $role     = 'broadcaster',
+        bool   $audioOnly = false
+    ): string {
+        // join(false) = publisher/broadcaster
+        // join(true)  = subscriber/audience
+        $isSubscriber = $role === 'audience';
 
-        $privilegeExpiredTs = time() + $this->tokenExpiry;
-
-        // ── Using agora/token-builder SDK ─────────────────────────────────
-        if (class_exists('\AgoraIO\Media\RtcTokenBuilder')) {
-            $agoraRole = $role === 'publisher'
-                ? \AgoraIO\Media\RtcTokenBuilder::RolePublisher
-                : \AgoraIO\Media\RtcTokenBuilder::RoleSubscriber;
-
-            return \AgoraIO\Media\RtcTokenBuilder::buildTokenWithUid(
-                appID:              $this->appId,
-                appCertificate:     $this->appCertificate,
-                channelName:        $channelName,
-                uid:                $uid,
-                role:               $agoraRole,
-                privilegeExpiredTs: $privilegeExpiredTs,
-            );
-        }
-
-        // ── Manual fallback (AccessToken v1) ──────────────────────────────
-        return $this->buildTokenManually($channelName, $uid, $role, $privilegeExpiredTs);
+        return Agora::make($uid)
+            ->channel($channelName)
+            ->uId($uid)
+            ->join($isSubscriber)          // false = broadcaster, true = audience
+            ->audioOnly($audioOnly)        // false = video+audio, true = audio only
+            ->token();
     }
 
     /**
-     * Generate an Agora RTM token for a user (messaging channel).
+     * Generate token for a host (broadcaster, video+audio).
      */
-    public function generateRtmToken(int $uid): string
+    public function generateHostToken(string $channelName, int $uid): string
     {
-        if (class_exists('\AgoraIO\Rtm\RtmTokenBuilder')) {
-            return \AgoraIO\Rtm\RtmTokenBuilder::buildToken(
-                appID:              $this->appId,
-                appCertificate:     $this->appCertificate,
-                userId:             (string) $uid,
-                role:               \AgoraIO\Rtm\RtmTokenBuilder::RoleRtmUser,
-                privilegeExpiredTs: time() + $this->tokenExpiry,
-            );
-        }
+        return $this->generateToken($channelName, $uid, 'broadcaster', false);
+    }
 
-        return '';
+    /**
+     * Generate token for a viewer (audience, video+audio).
+     */
+    public function generateViewerToken(string $channelName, int $uid): string
+    {
+        return $this->generateToken($channelName, $uid, 'audience', false);
+    }
+
+    /**
+     * Generate token for audio-only broadcaster (party room seat).
+     */
+    public function generateAudioToken(string $channelName, int $uid): string
+    {
+        return $this->generateToken($channelName, $uid, 'broadcaster', true);
     }
 
     public function getAppId(): string
     {
         return $this->appId;
-    }
-
-    // ── Private helpers ───────────────────────────────────────────────────────
-
-    private function buildTokenManually(
-        string $channelName,
-        int $uid,
-        string $role,
-        int $expiredTs
-    ): string {
-        $roleInt    = $role === 'publisher' ? 1 : 2;
-        $nonce      = random_int(1, PHP_INT_MAX);
-        $timestamp  = time();
-        $message    = $this->appId . $timestamp . $nonce . $uid . $channelName . $roleInt . $expiredTs;
-        $signature  = hash_hmac('sha256', $message, $this->appCertificate);
-
-        $content = $this->appId . $timestamp . $nonce . $uid . $channelName . $roleInt . $expiredTs . $signature;
-
-        return base64_encode($content);
     }
 }

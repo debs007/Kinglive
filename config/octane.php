@@ -34,17 +34,19 @@ return [
         'options' => [
             'log_file'                => storage_path('logs/swoole_http.log'),
             'log_level'               => SWOOLE_LOG_ERROR,
-            'package_max_length'      => 20 * 1024 * 1024,   // 20 MB
+            'package_max_length'      => 50 * 1024 * 1024,   // 50 MB
+            'upload_max_filesize'     => 20 * 1024 * 1024,   // 20 MB
+            'upload_tmp_dir'          => sys_get_temp_dir(),   // 20 MB
             'document_root'           => public_path(),
             'enable_static_handler'   => true,
             'static_handler_locations' => ['/storage', '/app'],
 
             // WebSocket
-            'open_websocket_protocol' => true,
+            'open_websocket_protocol' => false,
 
             // Performance
             'dispatch_mode'       => 2,
-            'enable_coroutine'    => true,
+            'enable_coroutine'    => false,
             'max_coroutine'       => 3000,
             'socket_buffer_size'  => 2 * 1024 * 1024,
             'buffer_output_size'  => 32 * 1024 * 1024,

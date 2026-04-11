@@ -1,28 +1,5 @@
-<?php
-
-namespace App\Swoole;
-
-use App\Models\Room;
-use App\Services\BanService;
-use Illuminate\Support\Facades\Redis;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
-use Swoole\Http\Request;
-use Swoole\WebSocket\Frame;
-use Swoole\WebSocket\Server;
-use Tymon\JWTAuth\Facades\JWTAuth;
-
-/**
- * King Live — Swoole WebSocket Handler
- *
- * Registered in config/octane.php under swoole.options.
- * All real-time events (chat, gifts, PK, seats, moderation)
- * flow through this handler backed by Redis Pub/Sub.
- */
-class WebSocketHandler
-{
-    /** fd => [user_id, room_id, username, avatar] */
-    private static array $connections = [];
+[user_id, room_id, username, avatar] */ private static array
+$connections = [];
 
     // ── Connection lifecycle ──────────────────────────────────────────────────
 
@@ -518,8 +495,7 @@ class WebSocketHandler
         }
 
         $duration = (int) \App\Models\Setting::get('pk_duration', 300);
-        $startedAt = now()->toISOString();
-        //$startedAt = time();
+
         $sessionData = [
             'challenger_room' => $invite['challenger_room'],
             'target_room'     => $conn['room_id'],
@@ -527,11 +503,13 @@ class WebSocketHandler
                 $invite['challenger_room'] => 0,
                 $conn['room_id']           => 0,
             ],
-            'started_at' => $startedAt,
+            'started_at' => time(),
             'duration'   => $duration,
         ];
 
-        
+        Redis::setex("pk:session:{$pkSessionId}", $duration + 60, json_encode($sessionData));
+        Redis::setex("pk:room:{$invite['challenger_room']}", $duration + 60, $pkSessionId);
+        Redis::setex("pk:room:{$conn['room_id']}", $duration + 60, $pkSessionId);
 
         // Create a shared PK channel both hosts will join
         // This allows viewers to see both cameras via one Agora channel
@@ -552,10 +530,6 @@ class WebSocketHandler
         $sessionData['target_uid']         = $targetAgoraUid;
         $sessionData['challenger_token']   = $challengerToken;
         $sessionData['target_token']       = $targetToken;
-        
-        Redis::setex("pk:session:{$pkSessionId}", $duration + 60, json_encode($sessionData));
-        Redis::setex("pk:room:{$invite['challenger_room']}", $duration + 60, $pkSessionId);
-        Redis::setex("pk:room:{$conn['room_id']}", $duration + 60, $pkSessionId);
 
         $broadcast = [
             'type'                  => 'pk.started',
@@ -563,7 +537,7 @@ class WebSocketHandler
             'challenger_room'       => $invite['challenger_room'],
             'target_room'           => $conn['room_id'],
             'duration'              => $duration,
-            'started_at'            => $startedAt,
+            'started_at'            => now()->toISOString(),
             'pk_channel_id'         => $pkChannelId,
             // Challenger info
             'challenger_uid'        => $challengerAgoraUid,
@@ -617,21 +591,12 @@ class WebSocketHandler
             return;
         }
 
-        $session = json_decode($raw, true);
-        $session['scores'][$roomId] = ($session['scores'][$roomId] ?? 0) + $coinValue;
-        
-        // $elapsed = time() - (int)$session['started_at'];
-        // $ttl = max(1, ($session['duration'] ?? 300) - $elapsed);
+        $session                        = json_decode($raw, true);
+        $session['scores'][$roomId]     = ($session['scores'][$roomId] ?? 0) + $coinValue;
+        $elapsed = time() - (int)$session['started_at'];
+        $ttl = max(1, ($session['duration'] ?? 300) - $elapsed);
 
-        // Redis::setex("pk:session:{$pkSessionId}", $ttl + 60, json_encode($session));
-        
-        $ttl = Redis::ttl("pk:session:{$pkSessionId}");
-
-        if ($ttl <= 0) {
-            $ttl = 360;
-        }
-        
-        Redis::setex("pk:session:{$pkSessionId}", $ttl, json_encode($session));
+        Redis::setex("pk:session:{$pkSessionId}", $ttl + 60, json_encode($session));
 
         $scoreBroadcast = [
             'type'          => 'pk.scores',
@@ -1025,4 +990,5 @@ class WebSocketHandler
         $fd = Redis::get("ws:user:{$userId}:fd");
         return $fd !== null ? (int) $fd : null;
     }
+
 }

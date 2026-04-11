@@ -22,6 +22,9 @@ Route::prefix('admin')->name('admin.')->group(function () {
     Route::get ('login',  [DashboardController::class, 'loginForm'])->name('login');
     Route::post('login',  [DashboardController::class, 'login'])->name('login.post');
     Route::post('logout', [DashboardController::class, 'logout'])->name('logout');
+    Route::get('/hello', function () {
+    return 'hello';
+});
 
     // ── Protected ─────────────────────────────────────────────────────────────
     Route::middleware('admin.auth')->group(function () {
