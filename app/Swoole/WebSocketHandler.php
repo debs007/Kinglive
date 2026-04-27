@@ -430,10 +430,13 @@ class WebSocketHandler
         Redis::del("room:{$roomId}:user_pending:{$userId}");
 
         if ($accepted) {
+            $agoraUid = (int) $userId;
+
             Redis::hset("room:{$roomId}:seats", $seatIndex, json_encode([
-                'user_id'  => $userId,
-                'username' => static::$connections[$targetFd]['username'] ?? '',
-                'avatar'   => static::$connections[$targetFd]['avatar'] ?? '',
+                'user_id'   => $userId,
+                'username'  => static::$connections[$targetFd]['username'] ?? '',
+                'avatar'    => static::$connections[$targetFd]['avatar'] ?? '',
+                'agora_uid' => $agoraUid,
             ]));
 
             static::broadcastToRoom($server, $roomId, [
@@ -442,6 +445,7 @@ class WebSocketHandler
                 'user_id'    => $userId,
                 'username'   => static::$connections[$targetFd]['username'] ?? '',
                 'avatar'     => static::$connections[$targetFd]['avatar'] ?? '',
+                'agora_uid'  => $agoraUid,
             ]);
         }
 
