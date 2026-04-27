@@ -12,14 +12,12 @@ use App\Models\WithdrawalRequest;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Auth;
 
 class DashboardController extends Controller
 {
     public function loginForm()
     {
-        if (auth()->check()) {
-            return redirect()->route('admin.dashboard');
-        }
         return view('admin.auth.login');
     }
 
@@ -30,12 +28,13 @@ class DashboardController extends Controller
             'password' => ['required'],
         ]);
 
-        if (! auth()->attempt($credentials)) {
+        if (! Auth::guard('admin')->attempt($credentials)) {
             return back()->withErrors(['email' => 'Invalid credentials.'])->withInput();
         }
-
-        if (! in_array(auth()->user()->role, ['admin', 'super_admin', 'moderator'])) {
-            auth()->logout();
+            
+        $user = Auth::guard('admin')->user();
+        if (! in_array($user->role, ['admin', 'super_admin', 'moderator'])) {
+            Auth::guard('admin')->logout();
             return back()->withErrors(['email' => 'Access denied.']);
         }
 
@@ -44,7 +43,7 @@ class DashboardController extends Controller
 
     public function logout(Request $request)
     {
-        auth()->logout();
+        Auth::guard('admin')->logout();
         $request->session()->invalidate();
         $request->session()->regenerateToken();
         return redirect()->route('admin.login');

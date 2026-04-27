@@ -23,6 +23,9 @@ class User extends Authenticatable implements JWTSubject
         'level', 'xp',
         'is_verified', 'is_active',
         'total_streams', 'total_diamonds_earned',
+        'audio_live_days', 'video_live_days', 'total_live_minutes', 'total_live_hours',
+        'agency_id',
+        'google_id', 'auth_provider',
         'last_seen_at', 'device_token', 'device_platform',
     ];
 
@@ -87,6 +90,11 @@ class User extends Authenticatable implements JWTSubject
         return $this->hasMany(GameSession::class);
     }
 
+    public function agency(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(\App\Models\Agency::class);
+    }
+
     public function followers(): BelongsToMany
     {
         return $this->belongsToMany(User::class, 'follows', 'following_id', 'follower_id')
@@ -137,8 +145,8 @@ class User extends Authenticatable implements JWTSubject
     {
         return [
             'id'              => $this->id,
-            'username'        => $this->username,
-            'display_name'    => $this->display_name,
+            'username'        => $this->username ?? $this->display_name,
+            'display_name'    => $this->username ?? $this->display_name,
             'avatar_url'      => $this->avatar_url,
             'cover_url'       => $this->cover_url ?? null,
             'frame_url'       => $this->frame_url,
@@ -152,6 +160,11 @@ class User extends Authenticatable implements JWTSubject
             'following_count' => $this->following_count,
             'role'            => $this->role,
             'country_code'    => $this->country_code,
+            'agency_id'       => $this->agency_id,
+            'audio_live_days'   => $this->audio_live_days   ?? 0,
+            'video_live_days'   => $this->video_live_days   ?? 0,
+            'total_live_minutes'=> $this->total_live_minutes ?? 0,
+            'total_live_hours'  => $this->total_live_hours   ?? 0,
         ];
     }
 }

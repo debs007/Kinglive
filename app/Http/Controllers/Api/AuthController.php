@@ -101,11 +101,92 @@ class AuthController extends Controller
         return response()->json(['token' => JWTAuth::refresh()]);
     }
 
+    public function updateDeviceToken(Request $request): JsonResponse
+    {
+        $request->validate(['device_token' => ['required', 'string', 'max:500']]);
+        auth()->user()->update(['device_token' => $request->device_token]);
+        return response()->json(['ok' => true]);
+    }
+
     public function logout(): JsonResponse
     {
         JWTAuth::invalidate();
 
         return response()->json(['message' => 'Logged out successfully.']);
+    }
+
+    /**
+     * Google Sign-In — accepts Google ID token from Flutter,
+     * verifies it with Google, then creates/finds user and returns JWT.
+     */
+    public function googleLogin(Request $request): JsonResponse
+    {
+        $request->validate([
+            'id_token'     => ['required', 'string'],
+            'google_id'    => ['required', 'string'],
+            'email'        => ['nullable', 'email'],
+            'display_name' => ['nullable', 'string'],
+            'avatar_url'   => ['nullable', 'string'],
+        ]);
+
+        $googleId    = $request->google_id;
+        $email       = $request->email;
+        $displayName = $request->display_name;
+        $avatarUrl   = $request->avatar_url;
+
+        // Find existing user by google_id or email
+        $user = User::where('google_id', $googleId)->first();
+
+        if (! $user && $email) {
+            $user = User::where('email', $email)->first();
+        }
+
+        if ($user) {
+            // Update google_id if not set
+            if (! $user->google_id) {
+                $user->update(['google_id' => $googleId, 'auth_provider' => 'google']);
+            }
+        } else {
+            // Create new user
+            $username = $this->generateUsername($displayName ?? $email ?? 'user');
+
+            $user = User::create([
+                'google_id'     => $googleId,
+                'auth_provider' => 'google',
+                'username'      => $username,
+                'display_name'  => $displayName,
+                'email'         => $email,
+                'password'      => bcrypt(Str::random(32)), // random password — can't login with it
+                'avatar_url'    => $avatarUrl,
+                'is_active'     => true,
+            ]);
+        }
+
+        if (! $user->is_active) {
+            return response()->json(['message' => 'Account is suspended.'], 403);
+        }
+
+        $token = JWTAuth::fromUser($user);
+
+        return response()->json([
+            'token' => $token,
+            'user'  => $user->toProfileArray(),
+        ]);
+    }
+
+    private function generateUsername(?string $base): string
+    {
+        $base = $base
+            ? preg_replace('/[^a-z0-9_]/i', '', strtolower(str_replace(' ', '_', $base)))
+            : 'user';
+        $base = substr($base, 0, 15) ?: 'user';
+
+        $username = $base;
+        $i = 1;
+        while (User::where('username', $username)->exists()) {
+            $username = $base . $i++;
+        }
+        return $username;
     }
 
     public function me(): JsonResponse
@@ -118,21 +199,36 @@ class AuthController extends Controller
         $data = $request->validate([
             'display_name' => ['sometimes', 'string', 'max:100'],
             'bio'          => ['sometimes', 'string', 'max:500'],
-            'avatar_url'   => ['sometimes', 'url'],
-            'frame_url'    => ['sometimes', 'url'],
+            'avatar_url'   => ['sometimes', 'nullable', 'string', 'max:500'],
+            'cover_url'    => ['sometimes', 'nullable', 'string', 'max:500'],
+            'frame_url'    => ['sometimes', 'nullable', 'string', 'max:500'],
         ]);
+
+        // When display_name is updated, also sync username to keep them consistent
+        if (isset($data['display_name'])) {
+            //$base     = \Str::slug($data['display_name'], '_');
+            $base     = $data['display_name'];
+            $username = $base;
+            $i        = 1;
+            while (\App\Models\User::where('username', $username)
+                ->where('id', '!=', auth()->id())
+                ->exists()) {
+                $username = $base . '_' . $i++;
+            }
+            $data['username'] = $username;
+        }
 
         auth()->user()->update($data);
 
         return response()->json(auth()->user()->fresh()->toProfileArray());
     }
 
-    public function updateDeviceToken(Request $request): JsonResponse
-    {
-        $request->validate(['device_token' => 'required|string']);
+    // public function updateDeviceToken(Request $request): JsonResponse
+    // {
+    //     $request->validate(['device_token' => 'required|string']);
 
-        auth()->user()->update(['device_token' => $request->device_token]);
+    //     auth()->user()->update(['device_token' => $request->device_token]);
 
-        return response()->json(['message' => 'Device token updated.']);
-    }
+    //     return response()->json(['message' => 'Device token updated.']);
+    // }
 }

@@ -46,9 +46,12 @@ class BanController extends Controller
             'room_id'  => ['nullable', 'string'],
         ]);
 
+        // Admin uses 'admin' guard — auth()->id() returns null, use auth('admin')->id()
+        $adminId = auth('admin')->id() ?? 0;
+
         $this->banService->ban(
             targetUserId: $data['user_id'],
-            adminId:      auth()->id(),
+            adminId:      $adminId,
             reason:       $data['reason'],
             duration:     $data['duration'],
             type:         $data['type'],

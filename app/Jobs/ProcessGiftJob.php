@@ -24,7 +24,7 @@ class ProcessGiftJob implements ShouldQueue
         public readonly string $roomId,
         public readonly int    $quantity,
     ) {
-        $this->onQueue('gifts');
+        $this->onQueue('default');
     }
 
     public function handle(GiftService $giftService): void

@@ -10,6 +10,8 @@ use App\Services\AgoraService;
 use App\Services\BanService;
 use App\Services\LiveRoomService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Redis;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
@@ -24,7 +26,7 @@ class RoomController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $rooms = Room::with('host:id,username,avatar_url,is_verified,level')
+        $rooms = Room::with('host:id,username,display_name,avatar_url,is_verified,level')
             ->where('status', 'live')
             ->when($request->type, fn ($q, $t) => $q->where('type', $t))
             ->when($request->category, fn ($q, $c) => $q->where('category', $c))
@@ -58,6 +60,14 @@ class RoomController extends Controller
 
     public function store(CreateRoomRequest $request): JsonResponse
     {
+        // Must be in an agency to go live
+        if (! auth()->user()->agency_id) {
+            return response()->json([
+                'message' => 'You must join an agency before going live.',
+                'code'    => 'no_agency',
+            ], 403);
+        }
+
         $user = auth()->user();
 
         // End any existing live room for this host
@@ -75,7 +85,7 @@ class RoomController extends Controller
             'type'             => $request->type,
             'category'         => $request->category,
             'thumbnail_url'    => $request->thumbnail_url ?? $user->avatar_url,
-            'seat_count'       => $request->seat_count ?? 8,
+            'seat_count'       => $request->seat_count ?? ($request->type === 'audio_board' ? 16 : 8),
             'agora_channel_id' => $channelId,
             'agora_token'      => $agoraToken,
             'status'           => 'live',
@@ -83,7 +93,7 @@ class RoomController extends Controller
         ]);
 
         if ($request->type === 'audio_board') {
-            $this->roomService->initSeats($room->id, $request->seat_count ?? 8);
+            $this->roomService->initSeats($room->id, $request->seat_count ?? 16);
         }
 
         NotifyFollowersLiveJob::dispatch($user->id, $room->id, $room->title);
@@ -98,7 +108,7 @@ class RoomController extends Controller
     public function show(string $roomId): JsonResponse
     {
         $room = Room::with([
-            'host:id,username,avatar_url,is_verified,level',
+            'host:id,username,display_name,avatar_url,is_verified,level,diamond_balance',
             'seats.user:id,username,avatar_url',
         ])->findOrFail($roomId);
 
@@ -123,10 +133,12 @@ class RoomController extends Controller
             'agora_app_id'    => $this->agora->getAppId(),
             'viewer_count'    => $liveViewerCount,
             'is_following'    => auth()->user()->isFollowing($room->host_user_id),
+            'current_bg_url'  => $room->current_bg_url,
             'current_user_id'     => $userId,
             'current_username'    => auth()->user()->username,
             'current_user_avatar' => auth()->user()->avatar_url,
-            'user_coin_balance'   => auth()->user()->coin_balance,
+            'user_coin_balance'     => auth()->user()->coin_balance,
+            'host_diamond_balance'  => $room->host->diamond_balance ?? 0,
         ]);
     }
 
@@ -138,12 +150,69 @@ class RoomController extends Controller
             return response()->json(['message' => 'Unauthorized.'], 403);
         }
 
-        $room->update(['status' => 'ended', 'ended_at' => now()]);
+        $endedAt = now();
+        $room->update(['status' => 'ended', 'ended_at' => $endedAt]);
         $this->roomService->cleanupRoom($roomId);
 
+        // ── Live stats ────────────────────────────────────────────────────
+        $host = auth()->user();
+
+        // Calculate duration in minutes
+        $startedAt      = $room->started_at ?? $room->created_at;
+        $durationMins   = (int) $startedAt->diffInMinutes($endedAt);
+        $durationHours  = (int) floor($durationMins / 60);
+        $remainingMins  = $durationMins % 60;
+
+        // Always add live time
+        $updates = [
+            'total_live_minutes' => \DB::raw("total_live_minutes + {$durationMins}"),
+            'total_live_hours'   => \DB::raw("total_live_hours + {$durationHours}"),
+            'total_streams'      => \DB::raw('total_streams + 1'),
+        ];
+
+        // Day count: only if session was >= 40 mins AND not already counted today
+        if ($durationMins >= 40) {
+            $type    = $room->type; // 'video' | 'audio' | 'audio_board'
+            $dayKey  = "live_day_counted:{$host->id}:{$type}:" . now()->toDateString();
+            $counted = \Illuminate\Support\Facades\Redis::get($dayKey);
+
+            if (! $counted) {
+                \Illuminate\Support\Facades\Redis::setex($dayKey, 86400, 1);
+                if ($type === 'video') {
+                    $updates['video_live_days'] = \DB::raw('video_live_days + 1');
+                } else {
+                    $updates['audio_live_days'] = \DB::raw('audio_live_days + 1');
+                }
+            }
+        }
+
+        $host->update($updates);
+
+        // ── Diamond reward for 40+ minute video live ──────────────────────
+        $diamondReward = 0;
+        if ($durationMins >= 40 && $room->type === 'video') {
+            $rewardKey = "diamond_reward_given:{$host->id}:" . now()->toDateString();
+            if (! \Illuminate\Support\Facades\Redis::get($rewardKey)) {
+                \Illuminate\Support\Facades\Redis::setex($rewardKey, 86400, 1);
+                $host->increment('diamond_balance', 5000);
+                $diamondReward = 5000;
+
+                \App\Models\CoinTransaction::create([
+                    'user_id'      => $host->id,
+                    'type'         => 'live_reward',
+                    'amount'       => 5000,
+                    'balance_after'=> $host->fresh()->diamond_balance,
+                    'reference'    => "live_reward:room:{$roomId}",
+                ]);
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────
+
         return response()->json([
-            'message' => 'Room ended.',
-            'summary' => $this->roomService->getSummary($room),
+            'message'        => 'Room ended.',
+            'duration_mins'  => $durationMins,
+            'diamond_reward' => $diamondReward,
+            'summary'        => $this->roomService->getSummary($room),
         ]);
     }
 
@@ -156,6 +225,56 @@ class RoomController extends Controller
         return response()->json([
             'agora_token' => $this->agora->generateToken($room->agora_channel_id, $userId, $role),
         ]);
+    }
+
+    public function viewers(string $roomId): JsonResponse
+    {
+        // Get active viewer fds from Redis, map to user info
+        $fds = Redis::smembers("room:{$roomId}:fds");
+
+        // Collect user IDs from all fds first
+        $userIds = [];
+        foreach ($fds as $fd) {
+            $userId = Redis::get("ws:fd:{$fd}:user");
+            if ($userId) $userIds[] = (int) $userId;
+        }
+
+        if (empty($userIds)) {
+            return response()->json(['viewers' => []]);
+        }
+
+        // Single query for all users
+        $users = User::select('id', 'username', 'display_name', 'avatar_url', 'level')
+            ->whereIn('id', array_unique($userIds))
+            ->get()
+            ->keyBy('id');
+
+        // Single query for following status
+        $myFollowing = auth()->user()
+            ->following()->pluck('following_id')->toArray();
+
+        $viewers = $users->map(fn ($user) => [
+            'user_id'      => $user->id,
+            'username'     => $user->username,
+            'display_name' => $user->display_name,
+            'avatar_url'   => $user->avatar_url,
+            'level'        => $user->level,
+            'is_following' => in_array($user->id, $myFollowing),
+        ])->values()->toArray();
+
+        return response()->json(['viewers' => $viewers]);
+    }
+
+    public function viewerCount(string $roomId): JsonResponse
+    {
+        // Count actual WS connections in the room (most reliable)
+        $fdsCount    = (int) Redis::scard("room:{$roomId}:fds");
+        $redisCount  = (int) (Redis::get("room:{$roomId}:viewers") ?? 0);
+
+        // Use the larger of the two to avoid showing 0 when Redis is slightly stale
+        $count = max($fdsCount > 0 ? $fdsCount - 1 : 0, $redisCount);
+
+        return response()->json(['viewer_count' => $count]);
     }
 
     public function heartbeat(string $roomId): JsonResponse

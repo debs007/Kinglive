@@ -1,5 +1,11 @@
 <?php
 
+use App\Http\Controllers\Admin\AgencyController;
+use App\Http\Controllers\Admin\BackgroundController;
+use App\Http\Controllers\Admin\BannerController;
+use App\Http\Controllers\Agency\AgencyPortalController;
+use App\Http\Controllers\CoinSeller\CoinSellerPortalController;
+use App\Http\Controllers\Admin\CoinSellerController;
 use App\Http\Controllers\Admin\BanController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\GameReportController;
@@ -16,18 +22,46 @@ use Illuminate\Support\Facades\Route;
 |--------------------------------------------------------------------------
 */
 
+// ── Coin Seller Portal ───────────────────────────────────────────────────────────
+Route::prefix('coin-seller')->name('coin_seller.')->group(function () {
+    Route::get ('login',  [CoinSellerPortalController::class, 'loginForm'])->name('login');
+    Route::post('login',  [CoinSellerPortalController::class, 'login'])->name('login.post');
+    Route::post('logout', [CoinSellerPortalController::class, 'logout'])->name('logout');
+
+    Route::middleware(\App\Http\Middleware\CoinSellerAuthenticate::class)->group(function () {
+        Route::get ('/',                          [CoinSellerPortalController::class, 'dashboard'])->name('dashboard');
+        Route::get ('users',                      [CoinSellerPortalController::class, 'users'])->name('users');
+        Route::post('users/{id}/add-coins',       [CoinSellerPortalController::class, 'addCoins'])->name('users.add_coins');
+        Route::get ('transactions',               [CoinSellerPortalController::class, 'transactions'])->name('transactions');
+    });
+});
+
+// ── Agency Portal ────────────────────────────────────────────────────────────────
+Route::prefix('agency-portal')->name('agency.')->group(function () {
+
+    Route::get ('login',  [AgencyPortalController::class, 'loginForm'])->name('login');
+    Route::post('login',  [AgencyPortalController::class, 'login'])->name('login.post');
+    Route::post('logout', [AgencyPortalController::class, 'logout'])->name('logout');
+
+    Route::middleware(\App\Http\Middleware\AgencyAuthenticate::class)->group(function () {
+        Route::get('/',        [AgencyPortalController::class, 'dashboard'])->name('dashboard');
+        Route::get('members',  [AgencyPortalController::class, 'members'])->name('members');
+        Route::get('requests', [AgencyPortalController::class, 'requests'])->name('requests');
+        Route::post('requests/{id}/approve', [AgencyPortalController::class, 'approve'])->name('requests.approve');
+        Route::post('requests/{id}/reject',  [AgencyPortalController::class, 'reject'])->name('requests.reject');
+        Route::post('members/{id}/remove',   [AgencyPortalController::class, 'removeMember'])->name('members.remove');
+    });
+});
+
 // ── Admin Auth ────────────────────────────────────────────────────────────────
 Route::prefix('admin')->name('admin.')->group(function () {
 
     Route::get ('login',  [DashboardController::class, 'loginForm'])->name('login');
     Route::post('login',  [DashboardController::class, 'login'])->name('login.post');
     Route::post('logout', [DashboardController::class, 'logout'])->name('logout');
-    Route::get('/hello', function () {
-    return 'hello';
-});
 
     // ── Protected ─────────────────────────────────────────────────────────────
-    Route::middleware('admin.auth')->group(function () {
+    Route::middleware(\App\Http\Middleware\AdminAuthenticate::class)->group(function () {
 
         // Dashboard
         Route::get('/',               [DashboardController::class, 'index'])->name('dashboard');
@@ -51,6 +85,13 @@ Route::prefix('admin')->name('admin.')->group(function () {
         Route::get ('rooms/{id}',          [RoomController::class, 'show'])->name('rooms.show');
         Route::post('rooms/{id}/end',      [RoomController::class, 'endRoom'])->name('rooms.end');
 
+        // Backgrounds
+        Route::get   ('backgrounds',                   [BackgroundController::class, 'index'])->name('backgrounds.index');
+        Route::post  ('backgrounds/upload-url',        [BackgroundController::class, 'uploadUrl'])->name('backgrounds.upload_url');
+        Route::post  ('backgrounds',                   [BackgroundController::class, 'store'])->name('backgrounds.store');
+        Route::post  ('backgrounds/{id}/toggle',       [BackgroundController::class, 'toggle'])->name('backgrounds.toggle');
+        Route::delete('backgrounds/{id}',              [BackgroundController::class, 'destroy'])->name('backgrounds.destroy');
+
         // Gifts
         Route::get  ('gifts/report',       [GiftReportController::class, 'report'])->name('gifts.report');
         Route::get  ('gifts/manage',       [GiftReportController::class, 'manage'])->name('gifts.manage');
@@ -71,6 +112,28 @@ Route::prefix('admin')->name('admin.')->group(function () {
         Route::post('withdrawals/{id}/paid',    [WithdrawalController::class, 'markPaid'])->name('withdrawals.paid');
         Route::post('withdrawals/{id}/reject',  [WithdrawalController::class, 'reject'])->name('withdrawals.reject');
 
+        // Coin Sellers
+        Route::get   ('coin-sellers',                    [CoinSellerController::class, 'index'])->name('coin_sellers.index');
+        Route::post  ('coin-sellers',                    [CoinSellerController::class, 'store'])->name('coin_sellers.store');
+        Route::post  ('coin-sellers/{id}/add-coins',     [CoinSellerController::class, 'addCoins'])->name('coin_sellers.add_coins');
+        Route::post  ('coin-sellers/{id}/toggle',        [CoinSellerController::class, 'toggleActive'])->name('coin_sellers.toggle');
+        Route::delete('coin-sellers/{id}',               [CoinSellerController::class, 'destroy'])->name('coin_sellers.destroy');
+        Route::post  ('coin-sellers/give-to-user',       [CoinSellerController::class, 'giveCoinsToUser'])->name('coin_sellers.give_to_user');
+        Route::get   ('coin-sellers/transactions',       [CoinSellerController::class, 'transactions'])->name('coin_sellers.transactions');
+
+        // Banners
+        Route::get   ('banners',              [BannerController::class, 'index'])->name('banners.index');
+        Route::post  ('banners',              [BannerController::class, 'store'])->name('banners.store');
+        Route::post  ('banners/{id}/toggle',  [BannerController::class, 'toggleActive'])->name('banners.toggle');
+        Route::delete('banners/{id}',         [BannerController::class, 'destroy'])->name('banners.destroy');
+
+        // Agencies
+        Route::get   ('agencies',                   [AgencyController::class, 'index'])->name('agencies.index');
+        Route::post  ('agencies',                   [AgencyController::class, 'store'])->name('agencies.store');
+        Route::put   ('agencies/{id}',              [AgencyController::class, 'update'])->name('agencies.update');
+        Route::post  ('agencies/{id}/regenerate',   [AgencyController::class, 'regenerateCode'])->name('agencies.regenerate');
+        Route::delete('agencies/{id}',              [AgencyController::class, 'destroy'])->name('agencies.destroy');
+
         // Settings
         Route::get ('settings',            [SettingsController::class, 'index'])->name('settings.index');
         Route::post('settings',            [SettingsController::class, 'update'])->name('settings.update');
@@ -78,4 +141,14 @@ Route::prefix('admin')->name('admin.')->group(function () {
 });
 
 // Redirect root to admin
-Route::get('/', fn () => redirect('/admin'));
+Route::get('/', fn () => redirect('/admin/login'));
+
+// Deep link redirect — opens app when user taps shared live link
+// Falls back to app store if app not installed
+Route::get('/live/{roomId}', function (string $roomId) {
+    $appScheme  = "kinglive://live/{$roomId}";
+    $playStore  = "https://play.google.com/store/apps/details?id=com.kinglive.app";
+    $appStore   = "https://apps.apple.com/app/king-live/id000000000";
+
+    return response()->view('deeplink', compact('appScheme', 'playStore', 'appStore', 'roomId'));
+});

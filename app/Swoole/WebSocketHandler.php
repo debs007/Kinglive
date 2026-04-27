@@ -14,17 +14,11 @@ use Tymon\JWTAuth\Facades\JWTAuth;
 
 /**
  * King Live — Swoole WebSocket Handler
- *
- * Registered in config/octane.php under swoole.options.
- * All real-time events (chat, gifts, PK, seats, moderation)
- * flow through this handler backed by Redis Pub/Sub.
  */
 class WebSocketHandler
 {
     /** fd => [user_id, room_id, username, avatar] */
     private static array $connections = [];
-
-    // ── Connection lifecycle ──────────────────────────────────────────────────
 
     public static function onOpen(Server $server, Request $request): void
     {
@@ -51,7 +45,6 @@ class WebSocketHandler
             return;
         }
 
-        /** @var BanService $banService */
         $banService = app(BanService::class);
 
         if ($banService->isGloballyBanned($user->id)) {
@@ -68,8 +61,8 @@ class WebSocketHandler
             'level'    => $user->level,
         ];
 
-        // Also store in Redis so other workers can find this fd
-        Redis::setex("ws:user:{$user->id}:fd", 86400, $fd);
+        Redis::sadd("ws:user:{$user->id}:fds", $fd);
+        Redis::expire("ws:user:{$user->id}:fds", 86400);
         Redis::setex("ws:fd:{$fd}:user", 86400, $user->id);
 
         $server->push($fd, json_encode(['type' => 'connected', 'user_id' => $user->id]));
@@ -79,47 +72,43 @@ class WebSocketHandler
 
     public static function onMessage(Server $server, Frame $frame): void
     {
-        $fd   = $frame->fd;
-        // Use a reference so handlers that modify $conn (e.g. handleRoomJoin
-        // setting room_id) actually persist the change in static::$connections.
-        if (! isset(static::$connections[$fd])) {
-            return;
-        }
+        $fd = $frame->fd;
+        if (! isset(static::$connections[$fd])) return;
 
         $conn = &static::$connections[$fd];
-
         $data = json_decode($frame->data, true);
 
-        if (! $data || ! isset($data['type'])) {
-            return;
-        }
+        if (! $data || ! isset($data['type'])) return;
 
         try {
-        match ($data['type']) {
-            'room.join'       => static::handleRoomJoin($server, $fd, $conn, $data),
-            'room.leave'      => static::handleRoomLeave($server, $fd, $conn),
-            'chat.message'    => static::handleChat($server, $fd, $conn, $data),
-            'seat.request'    => static::handleSeatRequest($server, $fd, $conn, $data),
-            'seat.response'   => static::handleSeatResponse($server, $fd, $conn, $data),
-            'seat.leave'      => static::handleSeatLeave($server, $fd, $conn, $data),
-            'gift.send'       => static::handleGift($server, $fd, $conn, $data),
-            'pk.invite'       => static::handlePkInvite($server, $fd, $conn, $data),
-            'pk.invite_user'  => static::handlePkInviteToUser($server, $fd, $conn, $data),
-            'pk.invite_followers' => static::handlePkInviteFollowers($server, $fd, $conn, $data),
-            'pk.response'     => static::handlePkResponse($server, $fd, $conn, $data),
-            'game.event'      => static::handleGameEvent($server, $fd, $conn, $data),
-            'mod.kick'        => static::handleKick($server, $fd, $conn, $data),
-            'mod.silence'     => static::handleSilence($server, $fd, $conn, $data),
-            'call.request'    => static::handleCallRequest($server, $fd, $conn, $data),
-            'call.response'   => static::handleCallResponse($server, $fd, $conn, $data),
-            'call.leave'      => static::handleCallLeave($server, $fd, $conn),
-            'call.kick'       => static::handleCallKick($server, $fd, $conn, $data),
-            'ping'            => static::handlePing($server, $fd, $conn),
-            default           => null,
-        };
+            match ($data['type']) {
+                'room.join'           => static::handleRoomJoin($server, $fd, $conn, $data),
+                'room.leave'          => static::handleRoomLeave($server, $fd, $conn),
+                'chat.message'        => static::handleChat($server, $fd, $conn, $data),
+                'seat.request'        => static::handleSeatRequest($server, $fd, $conn, $data),
+                'seat.response'       => static::handleSeatResponse($server, $fd, $conn, $data),
+                'seat.leave'          => static::handleSeatLeave($server, $fd, $conn, $data),
+                'seat.lock'           => static::handleSeatLock($server, $fd, $conn, $data),
+                'seat.deboard'        => static::handleSeatDeboard($server, $fd, $conn, $data),
+                'mod.room_ban'        => static::handleRoomBan($server, $fd, $conn, $data),
+                'gift.send'           => static::handleGift($server, $fd, $conn, $data),
+                'pk.invite'           => static::handlePkInvite($server, $fd, $conn, $data),
+                'pk.invite_user'      => static::handlePkInviteToUser($server, $fd, $conn, $data),
+                'pk.invite_followers' => static::handlePkInviteFollowers($server, $fd, $conn, $data),
+                'pk.response'         => static::handlePkResponse($server, $fd, $conn, $data),
+                'game.event'          => static::handleGameEvent($server, $fd, $conn, $data),
+                'mod.kick'            => static::handleKick($server, $fd, $conn, $data),
+                'mod.silence'         => static::handleSilence($server, $fd, $conn, $data),
+                'call.request'        => static::handleCallRequest($server, $fd, $conn, $data),
+                'call.response'       => static::handleCallResponse($server, $fd, $conn, $data),
+                'call.leave'          => static::handleCallLeave($server, $fd, $conn),
+                'call.kick'           => static::handleCallKick($server, $fd, $conn, $data),
+                'ping'                => static::handlePing($server, $fd, $conn),
+                'room.bg_change'      => static::handleBgChange($server, $fd, $conn, $data),
+                default               => null,
+            };
         } catch (\Throwable $e) {
             Log::error("WS onMessage error fd={$fd} type={$data['type']}: " . $e->getMessage());
-            // Send error back to client but DO NOT close the connection
             if ($server->isEstablished($fd)) {
                 $server->push($fd, json_encode([
                     'type'    => 'error',
@@ -131,28 +120,23 @@ class WebSocketHandler
 
     public static function onClose(Server $server, int $fd): void
     {
-        if (! isset(static::$connections[$fd])) {
-            return;
-        }
+        if (! isset(static::$connections[$fd])) return;
 
-        $conn = static::$connections[$fd]; // copy is fine here — read-only
+        $conn = static::$connections[$fd];
 
         if ($conn['room_id']) {
-            $roomId  = $conn['room_id'];
-            $room    = \App\Models\Room::find($roomId);
-            $isHost  = $room && $room->host_user_id === $conn['user_id'];
+            $roomId = $conn['room_id'];
+            $room   = \App\Models\Room::find($roomId);
+            $isHost = $room && $room->host_user_id === $conn['user_id'];
 
             static::removeFromRoom($server, $fd, $conn);
 
-            // If the host disconnects, end the room immediately
             if ($isHost) {
                 $room?->update(['status' => 'ended', 'ended_at' => now()]);
-                // Broadcast to all viewers so Flutter removes room from home screen
                 static::broadcastToRoom($server, $roomId, [
                     'type'    => 'room.ended',
                     'room_id' => $roomId,
                 ]);
-                // Clean up Redis keys including heartbeat
                 Redis::del(
                     "room:{$roomId}:fds",
                     "room:{$roomId}:viewers",
@@ -164,7 +148,7 @@ class WebSocketHandler
             }
         }
 
-        Redis::del("ws:user:{$conn['user_id']}:fd");
+        Redis::srem("ws:user:{$conn['user_id']}:fds", $fd);
         Redis::del("ws:fd:{$fd}:user");
         unset(static::$connections[$fd]);
 
@@ -176,83 +160,144 @@ class WebSocketHandler
     private static function handleRoomJoin(Server $server, int $fd, array &$conn, array $data): void
     {
         $roomId = $data['room_id'] ?? null;
-
-        if (! $roomId) {
-            return;
-        }
+        if (! $roomId) return;
 
         $room = Room::find($roomId);
-
         if (! $room) {
             $server->push($fd, json_encode(['type' => 'error', 'message' => 'Room not found.']));
             return;
         }
 
-        // Allow joining if live or waiting (host preview)
         if (! in_array($room->status, ['live', 'waiting'])) {
             $server->push($fd, json_encode(['type' => 'error', 'message' => 'Room has ended.']));
             return;
         }
 
-        /** @var BanService $banService */
         $banService = app(BanService::class);
-
         if ($banService->isRoomBanned($conn['user_id'], $roomId)) {
-            $server->push($fd, json_encode(['type' => 'room.banned', 'room_id' => $roomId]));
+            $server->push($fd, json_encode(['type' => 'room.banned', 'room_id' => $roomId, 'message' => 'You are banned from this room.']));
             return;
         }
 
         $conn['room_id'] = $roomId;
 
+        $existingFds = Redis::smembers("room:{$roomId}:fds");
+        foreach ($existingFds as $existingFd) {
+            $existingUser = Redis::get("ws:fd:{$existingFd}:user");
+            if ($existingUser == $conn['user_id'] && $existingFd != $fd) {
+                Redis::srem("room:{$roomId}:fds", $existingFd);
+            }
+        }
         Redis::srem("room:{$roomId}:fds", $fd);
         Redis::sadd("room:{$roomId}:fds", $fd);
         Redis::expire("room:{$roomId}:fds", 86400);
-        Redis::incr("room:{$roomId}:viewers");
 
-        // Broadcast user joined
+        $room = Room::find($roomId);
+        if ($room?->host_user_id !== $conn['user_id']) {
+            Redis::incr("room:{$roomId}:viewers");
+        }
+
         static::broadcastToRoom($server, $roomId, [
-            'type'     => 'user.joined',
-            'user_id'  => $conn['user_id'],
-            'username' => $conn['username'],
-            'avatar'   => $conn['avatar'],
-            'level'    => $conn['level'],
+            'type'         => 'user.joined',
+            'user_id'      => $conn['user_id'],
+            'username'     => $conn['username'],
+            'avatar'       => $conn['avatar'],
+            'level'        => $conn['level'],
+            'viewer_count' => (int) Redis::get("room:{$roomId}:viewers"),
         ], exclude: $fd);
 
-        // Send room state to new joiner
-        $chatRaw = Redis::zrange("room:{$roomId}:chat", -50, -1);
-        $chat    = array_map(fn ($c) => json_decode($c, true), $chatRaw);
+        $allSeats = Redis::hgetall("room:{$roomId}:seats") ?: [];
+        foreach ($allSeats as $seatIdx => $seatJson) {
+            $seatData = json_decode($seatJson, true);
+            if (! isset($seatData['user_id'])) continue;
+            $seatUserId = (int) $seatData['user_id'];
+            $seatFd     = static::getFdByUserId($seatUserId);
+            if (! $seatFd || ! $server->isEstablished($seatFd)) {
+                Redis::hdel("room:{$roomId}:seats", $seatIdx);
+                static::broadcastToRoom($server, $roomId, ['type' => 'seat.vacated', 'seat_index' => (int) $seatIdx]);
+            }
+        }
 
+        $chatRaw             = Redis::zrange("room:{$roomId}:chat", -50, -1);
+        $chat                = array_map(fn ($c) => json_decode($c, true), $chatRaw);
+        $callParticipantsRaw = Redis::hgetall("call:{$roomId}:participants") ?: [];
+        $callParticipants    = array_values(array_map(fn ($p) => json_decode($p, true), $callParticipantsRaw));
+
+        // $server->push($fd, json_encode([
+        //     'type'              => 'room.state',
+        //     'viewer_count'      => (int) Redis::get("room:{$roomId}:viewers"),
+        //     'recent_chat'       => array_values($chat),
+        //     'seats'             => Redis::hgetall("room:{$roomId}:seats") ?: [],
+        //     'call_participants' => $callParticipants,
+        // ]));
+        
+        // Include current background so new joiners see it immediately
+        $room          = \App\Models\Room::find($roomId);
+        $currentBgUrl  = $room?->current_bg_url;
+        
         $server->push($fd, json_encode([
-            'type'         => 'room.state',
-            'viewer_count' => (int) Redis::get("room:{$roomId}:viewers"),
-            'recent_chat'  => array_values($chat),
-            'seats'        => Redis::hgetall("room:{$roomId}:seats") ?: [],
+            'type'              => 'room.state',
+            'viewer_count'      => (int) Redis::get("room:{$roomId}:viewers"),
+            'recent_chat'       => array_values($chat),
+            'seats'             => Redis::hgetall("room:{$roomId}:seats") ?: [],
+            'call_participants' => $callParticipants,
+            'current_bg_url'    => $currentBgUrl,
         ]));
+
+        $pkSessionId = Redis::get("pk:room:{$roomId}");
+        if ($pkSessionId) {
+            $pkRaw = Redis::get("pk:session:{$pkSessionId}");
+            if ($pkRaw) {
+                $pkSession = json_decode($pkRaw, true);
+                $server->push($fd, json_encode([
+                    'type'            => 'pk.running',
+                    'pk_session_id'   => $pkSessionId,
+                    'challenger_room' => $pkSession['challenger_room'],
+                    'target_room'     => $pkSession['target_room'],
+                    'scores'          => $pkSession['scores'],
+                    'started_at'      => $pkSession['started_at'],
+                    'duration'        => $pkSession['duration'],
+                    'pk_channel_id'   => $pkSession['pk_channel_id'] ?? null,
+                    'challenger_uid'  => $pkSession['challenger_uid'] ?? null,
+                    'target_uid'      => $pkSession['target_uid'] ?? null,
+                ]));
+            }
+        }
     }
 
     private static function handleRoomLeave(Server $server, int $fd, array &$conn): void
     {
-        if ($conn['room_id']) {
-            static::removeFromRoom($server, $fd, $conn);
-        }
+        if ($conn['room_id']) static::removeFromRoom($server, $fd, $conn);
     }
 
     private static function removeFromRoom(Server $server, int $fd, array &$conn): void
     {
         $roomId = $conn['room_id'];
-
         Redis::srem("room:{$roomId}:fds", $fd);
 
-        $remaining = (int) Redis::decr("room:{$roomId}:viewers");
+        $room = Room::find($roomId);
+        if ($room?->host_user_id !== $conn['user_id']) {
+            $remaining = (int) Redis::decr("room:{$roomId}:viewers");
+            if ($remaining < 0) Redis::set("room:{$roomId}:viewers", 0);
+        }
 
-        if ($remaining < 0) {
-            Redis::set("room:{$roomId}:viewers", 0);
+        Redis::del("room:{$roomId}:user_pending:{$conn['user_id']}");
+
+        $seats = Redis::hgetall("room:{$roomId}:seats") ?: [];
+        foreach ($seats as $seatIndex => $seatJson) {
+            $seat = json_decode($seatJson, true);
+            if (($seat['user_id'] ?? null) == $conn['user_id']) {
+                Redis::hdel("room:{$roomId}:seats", $seatIndex);
+                static::broadcastToRoom($server, $roomId, ['type' => 'seat.vacated', 'seat_index' => (int) $seatIndex]);
+                break;
+            }
         }
 
         static::broadcastToRoom($server, $roomId, [
-            'type'     => 'user.left',
-            'user_id'  => $conn['user_id'],
-            'username' => $conn['username'],
+            'type'         => 'user.left',
+            'user_id'      => $conn['user_id'],
+            'username'     => $conn['username'],
+            'viewer_count' => (int) (Redis::get("room:{$roomId}:viewers") ?? 0),
         ]);
 
         $conn['room_id'] = null;
@@ -263,22 +308,15 @@ class WebSocketHandler
     private static function handleChat(Server $server, int $fd, array $conn, array $data): void
     {
         $roomId = $conn['room_id'];
+        if (! $roomId) return;
 
-        if (! $roomId) {
-            return;
-        }
-
-        // Check silence
         if (Redis::exists("silence:{$conn['user_id']}:{$roomId}")) {
             $server->push($fd, json_encode(['type' => 'error', 'message' => 'You are silenced in this room.']));
             return;
         }
 
         $message = htmlspecialchars(mb_substr($data['message'] ?? '', 0, 500));
-
-        if ($message === '') {
-            return;
-        }
+        if ($message === '') return;
 
         $payload = json_encode([
             'user_id'  => $conn['user_id'],
@@ -289,12 +327,10 @@ class WebSocketHandler
             'ts'       => time(),
         ]);
 
-        // Keep last 200 messages
         $key = "room:{$roomId}:chat";
         Redis::zadd($key, time(), $payload);
         Redis::zremrangebyrank($key, 0, -201);
 
-        // Broadcast to ALL including sender so sender sees their own message
         static::broadcastToRoom($server, $roomId, [
             'type'     => 'chat.message',
             'user_id'  => $conn['user_id'],
@@ -302,7 +338,31 @@ class WebSocketHandler
             'avatar'   => $conn['avatar'],
             'level'    => $conn['level'],
             'message'  => $message,
+        ], exclude: $fd);
+    }
+
+    // ── DM (Direct Message) ───────────────────────────────────────────────────
+
+    /**
+     * Push a DM message WS event to the receiver.
+     * Called from DirectMessageController after saving the message.
+     * Uses a static method so it can be called from outside (via app()->make).
+     */
+    /**
+     * Queue a DM message for delivery to a user via WebSocket.
+     * Called from HTTP process (DirectMessageController) — cannot access
+     * WS $connections directly. Stores in Redis, delivered on next ping.
+     */
+    public static function queueDmForUser(int $receiverId, array $message): void
+    {
+        $payload = json_encode([
+            'type'    => 'dm.message',
+            'message' => $message,
         ]);
+
+        $key = "ws:user:{$receiverId}:dm_pending";
+        Redis::rpush($key, $payload);
+        Redis::expire($key, 300);
     }
 
     // ── Seats ─────────────────────────────────────────────────────────────────
@@ -311,21 +371,43 @@ class WebSocketHandler
     {
         $roomId    = $conn['room_id'];
         $seatIndex = (int) ($data['seat_index'] ?? -1);
+        if (! $roomId || $seatIndex < 0) return;
 
-        if (! $roomId || $seatIndex < 0) {
+        $userPendingKey = "room:{$roomId}:user_pending:{$conn['user_id']}";
+        if (Redis::get($userPendingKey) !== null) {
+            $server->push($fd, json_encode(['type' => 'seat.error', 'message' => 'You already have a pending seat request.']));
             return;
         }
 
-        $hostFd = static::getHostFd($roomId);
+        $existing = Redis::hget("room:{$roomId}:seats", $seatIndex);
+        if ($existing) {
+            $seat = json_decode($existing, true);
+            if (isset($seat['user_id']) || ($seat['is_locked'] ?? false)) {
+                $server->push($fd, json_encode(['type' => 'seat.rejected', 'seat_index' => $seatIndex]));
+                return;
+            }
+        }
 
+        $pendingKey = "room:{$roomId}:seat_request:{$seatIndex}";
+        $prevUserId = Redis::get($pendingKey);
+        if ($prevUserId && $prevUserId != $conn['user_id']) {
+            $prevFd = static::getFdByUserId((int) $prevUserId);
+            if ($prevFd && $server->isEstablished($prevFd)) {
+                $server->push($prevFd, json_encode(['type' => 'seat.response', 'accepted' => false, 'seat_index' => $seatIndex]));
+            }
+        }
+
+        Redis::setex($pendingKey, 60, $conn['user_id']);
+        Redis::setex($userPendingKey, 60, $seatIndex);
+
+        $hostFd = static::getHostFd($roomId);
         if ($hostFd && $server->isEstablished($hostFd)) {
             $server->push($hostFd, json_encode([
-                'type'        => 'seat.request',
-                'user_id'     => $conn['user_id'],
-                'username'    => $conn['username'],
-                'avatar'      => $conn['avatar'],
-                'seat_index'  => $seatIndex,
-                'requester_fd' => $fd,
+                'type'       => 'seat.request',
+                'user_id'    => $conn['user_id'],
+                'username'   => $conn['username'],
+                'avatar'     => $conn['avatar'],
+                'seat_index' => $seatIndex,
             ]));
         }
     }
@@ -337,17 +419,15 @@ class WebSocketHandler
         $accepted  = (bool) ($data['accepted'] ?? false);
         $seatIndex = (int) ($data['seat_index'] ?? 0);
 
-        if (! $roomId || ! $userId) {
-            return;
-        }
+        if (! $roomId || ! $userId) return;
 
         $room = Room::find($roomId);
-
-        if ($room?->host_user_id !== $conn['user_id']) {
-            return;
-        }
+        if ($room?->host_user_id !== $conn['user_id']) return;
 
         $targetFd = static::getFdByUserId($userId);
+
+        Redis::del("room:{$roomId}:seat_request:{$seatIndex}");
+        Redis::del("room:{$roomId}:user_pending:{$userId}");
 
         if ($accepted) {
             Redis::hset("room:{$roomId}:seats", $seatIndex, json_encode([
@@ -378,11 +458,10 @@ class WebSocketHandler
     {
         $roomId    = $conn['room_id'];
         $seatIndex = (int) ($data['seat_index'] ?? -1);
+        if (! $roomId || $seatIndex < 0) return;
 
-        if (! $roomId || $seatIndex < 0) {
-            return;
-        }
-
+        Redis::del("room:{$roomId}:user_pending:{$conn['user_id']}");
+        Redis::del("room:{$roomId}:seat_request:{$seatIndex}");
         Redis::hdel("room:{$roomId}:seats", $seatIndex);
 
         static::broadcastToRoom($server, $roomId, [
@@ -390,6 +469,91 @@ class WebSocketHandler
             'seat_index' => $seatIndex,
             'user_id'    => $conn['user_id'],
         ]);
+    }
+
+    private static function handleSeatLock(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId    = $conn['room_id'];
+        $seatIndex = (int) ($data['seat_index'] ?? -1);
+        $lock      = (bool) ($data['lock'] ?? true);
+
+        if (! $roomId || $seatIndex < 0) return;
+
+        $room = Room::find($roomId);
+        if ($room?->host_user_id !== $conn['user_id']) return;
+
+        $existing = Redis::hget("room:{$roomId}:seats", $seatIndex);
+        $seat     = $existing ? json_decode($existing, true) : [];
+        if (isset($seat['user_id'])) return;
+
+        if ($lock) {
+            Redis::hset("room:{$roomId}:seats", $seatIndex, json_encode(['is_locked' => true]));
+        } else {
+            Redis::hdel("room:{$roomId}:seats", $seatIndex);
+        }
+
+        static::broadcastToRoom($server, $roomId, [
+            'type'       => 'seat.lock_changed',
+            'seat_index' => $seatIndex,
+            'is_locked'  => $lock,
+        ]);
+    }
+
+    private static function handleSeatDeboard(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId    = $conn['room_id'];
+        $seatIndex = (int) ($data['seat_index'] ?? -1);
+        if (! $roomId || $seatIndex < 0) return;
+
+        $room = Room::find($roomId);
+        if ($room?->host_user_id !== $conn['user_id']) return;
+
+        $existing = Redis::hget("room:{$roomId}:seats", $seatIndex);
+        if (! $existing) return;
+
+        $seat   = json_decode($existing, true);
+        $userId = $seat['user_id'] ?? null;
+        if (! $userId) return;
+
+        Redis::hdel("room:{$roomId}:seats", $seatIndex);
+
+        $targetFd = static::getFdByUserId((int) $userId);
+        if ($targetFd && $server->isEstablished($targetFd)) {
+            $server->push($targetFd, json_encode(['type' => 'seat.deboarded', 'seat_index' => $seatIndex]));
+            $server->push($targetFd, json_encode(['type' => 'agora.demote']));
+        }
+
+        static::broadcastToRoom($server, $roomId, ['type' => 'seat.vacated', 'seat_index' => $seatIndex]);
+    }
+
+    // ── Room Ban ──────────────────────────────────────────────────────────────
+
+    private static function handleRoomBan(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId       = $conn['room_id'];
+        $targetUserId = (int) ($data['user_id'] ?? 0);
+        if (! $roomId || ! $targetUserId) return;
+
+        $room = Room::find($roomId);
+        if ($room?->host_user_id !== $conn['user_id']) return;
+
+        $banService = app(\App\Services\BanService::class);
+        $banService->ban(
+            targetUserId: $targetUserId,
+            adminId:      $conn['user_id'],
+            reason:       'Banned from room by host',
+            duration:     'permanent',
+            type:         'room',
+            roomId:       $roomId,
+        );
+
+        $targetFd = static::getFdByUserId($targetUserId);
+        if ($targetFd && $server->isEstablished($targetFd)) {
+            $server->push($targetFd, json_encode(['type' => 'room.banned', 'room_id' => $roomId, 'message' => 'You have been banned from this room.']));
+            $server->close($targetFd);
+        }
+
+        static::broadcastToRoom($server, $roomId, ['type' => 'mod.user_kicked', 'user_id' => $targetUserId]);
     }
 
     // ── Gifts ─────────────────────────────────────────────────────────────────
@@ -401,62 +565,86 @@ class WebSocketHandler
         $targetUserId = (int) ($data['target_user_id'] ?? 0);
         $quantity     = min(99, max(1, (int) ($data['quantity'] ?? 1)));
 
-        if (! $roomId || ! $giftId) {
+        if (! $roomId || ! $giftId) return;
+
+        $gift      = \App\Models\Gift::find($giftId);
+        $coinValue = ($gift ? $gift->coin_price : 0) * $quantity;
+
+        if (! $gift) {
+            $server->push($fd, json_encode(['type' => 'gift.error', 'message' => 'Gift not found.']));
             return;
         }
 
-        // Queue coin processing
+        $sender = \App\Models\User::find($conn['user_id']);
+        if (! $sender || $sender->coin_balance < $coinValue) {
+            $server->push($fd, json_encode([
+                'type'     => 'gift.error',
+                'message'  => 'Not enough coins to send this gift.',
+                'required' => $coinValue,
+                'balance'  => $sender?->coin_balance ?? 0,
+            ]));
+            return;
+        }
+
         \App\Jobs\ProcessGiftJob::dispatch(
-            senderId:    $conn['user_id'],
-            receiverId:  $targetUserId,
-            giftId:      $giftId,
-            roomId:      $roomId,
-            quantity:    $quantity,
+            senderId:   $conn['user_id'],
+            receiverId: $targetUserId,
+            giftId:     $giftId,
+            roomId:     $roomId,
+            quantity:   $quantity,
         );
 
-        // Immediately broadcast animation to room
+        $newBalance = max(0, $sender->coin_balance - $coinValue);
+        $server->push($fd, json_encode(['type' => 'balance.update', 'coin_balance' => $newBalance]));
+
+        $totalDiamonds      = ($gift->diamond_value ?? 0) * $quantity;
+        $room               = \App\Models\Room::find($roomId);
+        $hostDiamondBalance = $room
+            ? (\App\Models\User::find($room->host_user_id)?->diamond_balance ?? 0) + $totalDiamonds
+            : 0;
+
+        static::broadcastToRoom($server, $roomId, [
+            'type'            => 'diamond.update',
+            'diamond_balance' => $hostDiamondBalance,
+            'diamonds_earned' => $totalDiamonds,
+        ]);
+
         static::broadcastToRoom($server, $roomId, [
             'type'           => 'gift.animation',
             'gift_id'        => $giftId,
+            'gift_name'      => $gift->name ?? '',
+            'svga_url'       => $gift->svga_url ?? '',
+            'gift_thumbnail' => $gift->thumbnail_url ?? '',
             'sender_id'      => $conn['user_id'],
             'sender_name'    => $conn['username'],
             'sender_avatar'  => $conn['avatar'],
             'target_user_id' => $targetUserId,
             'quantity'       => $quantity,
+            'coins'          => $coinValue,
         ]);
 
-        // Update PK score if active
         $pkSessionId = Redis::get("pk:room:{$roomId}");
-
-        if ($pkSessionId) {
-            $gift      = \App\Models\Gift::find($giftId);
-            $coinValue = ($gift ? $gift->coin_price : 0) * $quantity;
-            static::updatePkScore($server, $roomId, $pkSessionId, $coinValue);
-        }
+        if ($pkSessionId) static::updatePkScore($server, $roomId, $pkSessionId, $coinValue);
     }
 
-    // ── PK Battle ─────────────────────────────────────────────────────────────
+    // ── PK ────────────────────────────────────────────────────────────────────
 
     private static function handlePkInvite(Server $server, int $fd, array $conn, array $data): void
     {
         $targetRoomId = $data['target_room_id'] ?? null;
-
-        if (! $targetRoomId || ! $conn['room_id']) {
-            return;
-        }
+        if (! $targetRoomId || ! $conn['room_id']) return;
 
         $pkSessionId = (string) Str::uuid();
 
         Redis::setex("pk:invite:{$pkSessionId}", 30, json_encode([
-            'challenger_room' => $conn['room_id'],
-            'target_room'     => $targetRoomId,
-            'challenger_uid'  => $conn['user_id'],
-            'challenger_name' => $conn['username'],
+            'challenger_room'   => $conn['room_id'],
+            'target_room'       => $targetRoomId,
+            'challenger_uid'    => $conn['user_id'],
+            'challenger_name'   => $conn['username'],
             'challenger_avatar' => $conn['avatar'],
         ]));
 
         $hostFd = static::getHostFd($targetRoomId);
-
         if ($hostFd && $server->isEstablished($hostFd)) {
             $server->push($hostFd, json_encode([
                 'type'               => 'pk.invite',
@@ -472,173 +660,114 @@ class WebSocketHandler
     {
         $pkSessionId = $data['pk_session_id'] ?? null;
         $accepted    = (bool) ($data['accepted'] ?? false);
-
-        if (! $pkSessionId) {
-            return;
-        }
+        if (! $pkSessionId) return;
 
         $raw = Redis::get("pk:invite:{$pkSessionId}");
-
         if (! $raw) {
-            // Invite expired or already claimed — if this was an acceptance, tell user PK is full
-            if ($accepted) {
-                $server->push($fd, json_encode([
-                    'type'    => 'pk.full',
-                    'message' => 'PK battle already started with another user.',
-                ]));
-            }
+            if ($accepted) $server->push($fd, json_encode(['type' => 'pk.full', 'message' => 'PK battle already started.']));
             return;
         }
 
         $invite = json_decode($raw, true);
 
         if (! $accepted) {
-            // Decline — don't delete the invite, others can still accept
             $challengerFd = static::getFdByUserId($invite['challenger_uid']);
             if ($challengerFd && $server->isEstablished($challengerFd)) {
-                $server->push($challengerFd, json_encode([
-                    'type'          => 'pk.declined',
-                    'pk_session_id' => $pkSessionId,
-                ]));
+                $server->push($challengerFd, json_encode(['type' => 'pk.declined', 'pk_session_id' => $pkSessionId]));
             }
             return;
         }
 
-        // Use atomic Redis operation to claim the invite — only first acceptance wins
-        // DEL returns 1 if key existed and was deleted, 0 if already gone
         $claimed = Redis::del("pk:invite:{$pkSessionId}");
-
         if ($claimed === 0) {
-            // Someone else already claimed it
-            $server->push($fd, json_encode([
-                'type'    => 'pk.full',
-                'message' => 'PK battle already started with another user.',
-            ]));
+            $server->push($fd, json_encode(['type' => 'pk.full', 'message' => 'PK battle already started.']));
             return;
         }
 
-        $duration = (int) \App\Models\Setting::get('pk_duration', 300);
-        $startedAt = now()->toISOString();
-        //$startedAt = time();
-        $sessionData = [
-            'challenger_room' => $invite['challenger_room'],
-            'target_room'     => $conn['room_id'],
-            'scores'          => [
-                $invite['challenger_room'] => 0,
-                $conn['room_id']           => 0,
-            ],
-            'started_at' => $startedAt,
-            'duration'   => $duration,
-        ];
-
-        
-
-        // Create a shared PK channel both hosts will join
-        // This allows viewers to see both cameras via one Agora channel
+        $duration    = (int) \App\Models\Setting::get('pk_duration', 300);
         $pkChannelId = 'pk_' . $pkSessionId;
-
-        // Generate Agora tokens for the PK channel
         $agoraService = app(\App\Services\AgoraService::class);
-
         $challengerAgoraUid = $invite['challenger_uid'];
         $targetAgoraUid     = $conn['user_id'];
+        $challengerToken    = $agoraService->generateToken($pkChannelId, $challengerAgoraUid);
+        $targetToken        = $agoraService->generateToken($pkChannelId, $targetAgoraUid);
 
-        $challengerToken = $agoraService->generateToken($pkChannelId, $challengerAgoraUid);
-        $targetToken     = $agoraService->generateToken($pkChannelId, $targetAgoraUid);
+        $sessionData = [
+            'challenger_room'   => $invite['challenger_room'],
+            'target_room'       => $conn['room_id'],
+            'scores'            => [$invite['challenger_room'] => 0, $conn['room_id'] => 0],
+            'started_at'        => now()->toISOString(),
+            'duration'          => $duration,
+            'pk_channel_id'     => $pkChannelId,
+            'challenger_uid'    => $challengerAgoraUid,
+            'target_uid'        => $targetAgoraUid,
+            'challenger_token'  => $challengerToken,
+            'target_token'      => $targetToken,
+        ];
 
-        // Store PK channel info in session
-        $sessionData['pk_channel_id']      = $pkChannelId;
-        $sessionData['challenger_uid']     = $challengerAgoraUid;
-        $sessionData['target_uid']         = $targetAgoraUid;
-        $sessionData['challenger_token']   = $challengerToken;
-        $sessionData['target_token']       = $targetToken;
-        
         Redis::setex("pk:session:{$pkSessionId}", $duration + 60, json_encode($sessionData));
         Redis::setex("pk:room:{$invite['challenger_room']}", $duration + 60, $pkSessionId);
         Redis::setex("pk:room:{$conn['room_id']}", $duration + 60, $pkSessionId);
 
         $broadcast = [
-            'type'                  => 'pk.started',
-            'pk_session_id'         => $pkSessionId,
-            'challenger_room'       => $invite['challenger_room'],
-            'target_room'           => $conn['room_id'],
-            'duration'              => $duration,
-            'started_at'            => $startedAt,
-            'pk_channel_id'         => $pkChannelId,
-            // Challenger info
-            'challenger_uid'        => $challengerAgoraUid,
-            'challenger_name'       => $invite['challenger_name'],
-            'challenger_avatar'     => $invite['challenger_avatar'] ?? '',
-            'challenger_agora_uid'  => $challengerAgoraUid,
-            // Target info
-            'target_uid'            => $targetAgoraUid,
-            'target_name'           => $conn['username'],
-            'target_avatar'         => $conn['avatar'] ?? '',
-            'target_agora_uid'      => $targetAgoraUid,
+            'type'                 => 'pk.started',
+            'pk_session_id'        => $pkSessionId,
+            'challenger_room'      => $invite['challenger_room'],
+            'target_room'          => $conn['room_id'],
+            'duration'             => $duration,
+            'started_at'           => now()->toISOString(),
+            'pk_channel_id'        => $pkChannelId,
+            'challenger_uid'       => $challengerAgoraUid,
+            'challenger_name'      => $invite['challenger_name'],
+            'challenger_avatar'    => $invite['challenger_avatar'] ?? '',
+            'challenger_agora_uid' => $challengerAgoraUid,
+            'target_uid'           => $targetAgoraUid,
+            'target_name'          => $conn['username'],
+            'target_avatar'        => $conn['avatar'] ?? '',
+            'target_agora_uid'     => $targetAgoraUid,
         ];
 
-        // Send tokens privately to each host so they can join the PK channel
         $challengerHostFd = static::getFdByUserId($challengerAgoraUid);
         if ($challengerHostFd && $server->isEstablished($challengerHostFd)) {
             $server->push($challengerHostFd, json_encode([
-                'type'           => 'pk.join_channel',
-                'pk_channel_id'  => $pkChannelId,
-                'agora_token'    => $challengerToken,
-                'agora_uid'      => $challengerAgoraUid,
-                'opponent_uid'   => $targetAgoraUid,
-                'opponent_name'  => $conn['username'],
-                'opponent_avatar'=> $conn['avatar'] ?? '',
+                'type'            => 'pk.join_channel',
+                'pk_channel_id'   => $pkChannelId,
+                'agora_token'     => $challengerToken,
+                'agora_uid'       => $challengerAgoraUid,
+                'opponent_uid'    => $targetAgoraUid,
+                'opponent_name'   => $conn['username'],
+                'opponent_avatar' => $conn['avatar'] ?? '',
             ]));
         }
 
-        $targetFd = $fd; // current connection IS the target
-        $server->push($targetFd, json_encode([
-            'type'           => 'pk.join_channel',
-            'pk_channel_id'  => $pkChannelId,
-            'agora_token'    => $targetToken,
-            'agora_uid'      => $targetAgoraUid,
-            'opponent_uid'   => $challengerAgoraUid,
-            'opponent_name'  => $invite['challenger_name'],
-            'opponent_avatar'=> $invite['challenger_avatar'] ?? '',
+        $server->push($fd, json_encode([
+            'type'            => 'pk.join_channel',
+            'pk_channel_id'   => $pkChannelId,
+            'agora_token'     => $targetToken,
+            'agora_uid'       => $targetAgoraUid,
+            'opponent_uid'    => $challengerAgoraUid,
+            'opponent_name'   => $invite['challenger_name'],
+            'opponent_avatar' => $invite['challenger_avatar'] ?? '',
         ]));
 
         static::broadcastToRoom($server, $invite['challenger_room'], $broadcast);
         static::broadcastToRoom($server, $conn['room_id'], $broadcast);
 
-        // Schedule end job
         \App\Jobs\EndPkSessionJob::dispatch($pkSessionId)->delay(now()->addSeconds($duration));
     }
 
     private static function updatePkScore(Server $server, string $roomId, string $pkSessionId, int $coinValue): void
     {
         $raw = Redis::get("pk:session:{$pkSessionId}");
+        if (! $raw) return;
 
-        if (! $raw) {
-            return;
-        }
-
-        $session = json_decode($raw, true);
+        $session                    = json_decode($raw, true);
         $session['scores'][$roomId] = ($session['scores'][$roomId] ?? 0) + $coinValue;
-        
-        // $elapsed = time() - (int)$session['started_at'];
-        // $ttl = max(1, ($session['duration'] ?? 300) - $elapsed);
-
-        // Redis::setex("pk:session:{$pkSessionId}", $ttl + 60, json_encode($session));
-        
         $ttl = Redis::ttl("pk:session:{$pkSessionId}");
-
-        if ($ttl <= 0) {
-            $ttl = 360;
-        }
-        
+        if ($ttl <= 0) $ttl = 360;
         Redis::setex("pk:session:{$pkSessionId}", $ttl, json_encode($session));
 
-        $scoreBroadcast = [
-            'type'          => 'pk.scores',
-            'pk_session_id' => $pkSessionId,
-            'scores'        => $session['scores'],
-        ];
-
+        $scoreBroadcast = ['type' => 'pk.scores', 'pk_session_id' => $pkSessionId, 'scores' => $session['scores']];
         static::broadcastToRoom($server, $session['challenger_room'], $scoreBroadcast);
         static::broadcastToRoom($server, $session['target_room'], $scoreBroadcast);
     }
@@ -648,10 +777,7 @@ class WebSocketHandler
     private static function handleGameEvent(Server $server, int $fd, array $conn, array $data): void
     {
         $roomId = $conn['room_id'];
-
-        if (! $roomId) {
-            return;
-        }
+        if (! $roomId) return;
 
         static::broadcastToRoom($server, $roomId, [
             'type'       => 'game.event',
@@ -666,28 +792,18 @@ class WebSocketHandler
     {
         $roomId       = $conn['room_id'];
         $targetUserId = (int) ($data['user_id'] ?? 0);
-
-        if (! $roomId || ! $targetUserId) {
-            return;
-        }
+        if (! $roomId || ! $targetUserId) return;
 
         $room = Room::find($roomId);
-
-        if ($room?->host_user_id !== $conn['user_id']) {
-            return;
-        }
+        if ($room?->host_user_id !== $conn['user_id']) return;
 
         $targetFd = static::getFdByUserId($targetUserId);
-
         if ($targetFd && $server->isEstablished($targetFd)) {
             $server->push($targetFd, json_encode(['type' => 'mod.kicked', 'room_id' => $roomId]));
             $server->close($targetFd);
         }
 
-        static::broadcastToRoom($server, $roomId, [
-            'type'    => 'mod.user_kicked',
-            'user_id' => $targetUserId,
-        ]);
+        static::broadcastToRoom($server, $roomId, ['type' => 'mod.user_kicked', 'user_id' => $targetUserId]);
     }
 
     private static function handleSilence(Server $server, int $fd, array $conn, array $data): void
@@ -695,26 +811,16 @@ class WebSocketHandler
         $roomId       = $conn['room_id'];
         $targetUserId = (int) ($data['user_id'] ?? 0);
         $duration     = min(3600, max(60, (int) ($data['duration'] ?? 300)));
-
-        if (! $roomId || ! $targetUserId) {
-            return;
-        }
+        if (! $roomId || ! $targetUserId) return;
 
         $room = Room::find($roomId);
-
-        if ($room?->host_user_id !== $conn['user_id']) {
-            return;
-        }
+        if ($room?->host_user_id !== $conn['user_id']) return;
 
         Redis::setex("silence:{$targetUserId}:{$roomId}", $duration, 1);
 
         $targetFd = static::getFdByUserId($targetUserId);
-
         if ($targetFd && $server->isEstablished($targetFd)) {
-            $server->push($targetFd, json_encode([
-                'type'     => 'mod.silenced',
-                'duration' => $duration,
-            ]));
+            $server->push($targetFd, json_encode(['type' => 'mod.silenced', 'duration' => $duration]));
         }
 
         static::broadcastToRoom($server, $roomId, [
@@ -724,30 +830,27 @@ class WebSocketHandler
         ], exclude: $fd);
     }
 
-    // ── Ping / Pong ───────────────────────────────────────────────────────────────
+    // ── Ping ──────────────────────────────────────────────────────────────────
 
     private static function handlePing(Server $server, int $fd, array $conn): void
     {
         $server->push($fd, json_encode(['type' => 'pong']));
-
-        // Flush global pending broadcasts (pk.ended etc from queue jobs)
         static::flushPendingBroadcasts($server);
 
-        // Deliver room-specific pending broadcast
+        // Deliver pending DM messages for this user (cross-worker delivery)
+        $dmKey = "ws:user:{$conn['user_id']}:dm_pending";
+        while ($pending = Redis::lpop($dmKey)) {
+            $server->push($fd, $pending);
+        }
+
         $roomId = $conn['room_id'] ?? null;
         if (! $roomId) return;
 
         $pendingKey = "room:{$roomId}:pending_broadcast";
         $pending    = Redis::get($pendingKey);
-        if ($pending) {
-            $server->push($fd, $pending);
-        }
+        if ($pending) $server->push($fd, $pending);
     }
 
-    /**
-     * Called on every onMessage to flush global pending broadcasts.
-     * This ensures pk.ended and similar events are delivered quickly.
-     */
     private static function flushPendingBroadcasts(Server $server): void
     {
         $raw = Redis::rpop("ws:pending_broadcasts");
@@ -761,20 +864,14 @@ class WebSocketHandler
         }
     }
 
-    // ── PK Invite to User / Followers ────────────────────────────────────────────
+    // ── PK Invite to User/Followers ───────────────────────────────────────────
 
-    /**
-     * Send PK invite to a specific user by user_id.
-     * If online: push WS notification.
-     * If offline: store in-app notification.
-     */
     private static function handlePkInviteToUser(Server $server, int $fd, array $conn, array $data): void
     {
         $targetUserId = (int) ($data['target_user_id'] ?? 0);
         if (! $targetUserId || ! $conn['room_id']) return;
 
         $pkSessionId = (string) \Illuminate\Support\Str::uuid();
-
         Redis::setex("pk:invite:{$pkSessionId}", 60, json_encode([
             'challenger_room'   => $conn['room_id'],
             'challenger_uid'    => $conn['user_id'],
@@ -792,29 +889,19 @@ class WebSocketHandler
             'challenger_avatar'  => $conn['avatar'],
         ];
 
-        // Try to push via WS if user is online
         $targetFd = static::getFdByUserId($targetUserId);
         if ($targetFd && $server->isEstablished($targetFd)) {
             $server->push($targetFd, json_encode($payload));
         } else {
-            // Store in-app notification for offline user
-            static::storeNotification($targetUserId, 'pk_invite', [
-                ...$payload,
-                'message' => "{$conn['username']} challenged you to a PK battle!",
-            ]);
+            static::storeNotification($targetUserId, 'pk_invite', array_merge($payload, ['message' => "{$conn['username']} challenged you to a PK battle!"]));
         }
     }
 
-    /**
-     * Send PK invite to ALL followers of the challenger.
-     * First to accept wins, others get "PK is full" response.
-     */
     private static function handlePkInviteFollowers(Server $server, int $fd, array $conn, array $data): void
     {
         if (! $conn['room_id']) return;
 
         $pkSessionId = (string) \Illuminate\Support\Str::uuid();
-
         Redis::setex("pk:invite:{$pkSessionId}", 60, json_encode([
             'challenger_room'   => $conn['room_id'],
             'challenger_uid'    => $conn['user_id'],
@@ -823,15 +910,7 @@ class WebSocketHandler
             'sent_at'           => time(),
         ]));
 
-        // Track who was invited so we can reject duplicates
-        Redis::setex("pk:invite:{$pkSessionId}:pending", 60, 1);
-
-        // Get followers from DB
-        $followerIds = \App\Models\User::find($conn['user_id'])
-            ?->followers()
-            ->pluck('follower_id')
-            ->toArray() ?? [];
-
+        $followerIds = \App\Models\User::find($conn['user_id'])?->followers()->pluck('follower_id')->toArray() ?? [];
         if (empty($followerIds)) return;
 
         $payload = [
@@ -847,11 +926,7 @@ class WebSocketHandler
             if ($targetFd && $server->isEstablished($targetFd)) {
                 $server->push($targetFd, json_encode($payload));
             } else {
-                // Store in-app notification for offline followers
-                static::storeNotification((int) $followerId, 'pk_invite', [
-                    ...$payload,
-                    'message' => "{$conn['username']} challenged you to a PK battle!",
-                ]);
+                static::storeNotification((int) $followerId, 'pk_invite', array_merge($payload, ['message' => "{$conn['username']} challenged you to a PK battle!"]));
             }
         }
     }
@@ -859,26 +934,29 @@ class WebSocketHandler
     private static function storeNotification(int $userId, string $type, array $data): void
     {
         try {
-            \App\Models\Notification::create([
-                'user_id' => $userId,
-                'type'    => $type,
-                'data'    => $data,
-            ]);
+            \App\Models\Notification::create(['user_id' => $userId, 'type' => $type, 'data' => $data]);
+            $notifService = app(\App\Services\NotificationService::class);
+            $title = $type === 'pk_invite' ? '⚔ PK Battle Challenge' : 'New Notification';
+            $body  = $data['message'] ?? 'You have a new notification';
+            $notifService->sendToUser($userId, $title, $body, array_merge($data, ['type' => $type]));
         } catch (\Throwable $e) {
             Log::error("WS storeNotification failed: " . $e->getMessage());
         }
     }
 
-    // ── Video Call ───────────────────────────────────────────────────────────────
+    // ── Video Call ────────────────────────────────────────────────────────────
 
     private static function handleCallRequest(Server $server, int $fd, array $conn, array $data): void
     {
         $roomId = $conn['room_id'];
         if (! $roomId) return;
 
-        // Check max 3 participants
-        $callKey = "call:{$roomId}:participants";
-        if (Redis::scard($callKey) >= 3) {
+        if (Redis::get("pk:room:{$roomId}")) {
+            $server->push($fd, json_encode(['type' => 'call.full', 'message' => 'PK battle is in progress.']));
+            return;
+        }
+
+        if (Redis::hlen("call:{$roomId}:participants") >= 3) {
             $server->push($fd, json_encode(['type' => 'call.full']));
             return;
         }
@@ -899,10 +977,8 @@ class WebSocketHandler
         $roomId   = $conn['room_id'];
         $userId   = (int) ($data['user_id'] ?? 0);
         $accepted = (bool) ($data['accepted'] ?? false);
-
         if (! $roomId || ! $userId) return;
 
-        // Only host can respond
         $room = Room::find($roomId);
         if ($room?->host_user_id !== $conn['user_id']) return;
 
@@ -911,24 +987,27 @@ class WebSocketHandler
 
         if ($accepted) {
             $callKey    = "call:{$roomId}:participants";
-            $agoraUid   = $userId; // use user_id as agora uid for simplicity
-            Redis::sadd($callKey, $userId);
+            $agoraUid   = $userId;
+            $targetConn = static::$connections[$targetFd] ?? [];
+
+            Redis::hset($callKey, $userId, json_encode([
+                'user_id'    => $userId,
+                'username'   => $targetConn['username'] ?? '',
+                'avatar'     => $targetConn['avatar']   ?? '',
+                'agora_uid'  => $agoraUid,
+                'camera_off' => true,
+            ]));
             Redis::expire($callKey, 86400);
 
-            // Notify the viewer they're accepted
-            $server->push($targetFd, json_encode([
-                'type'      => 'call.accepted',
-                'agora_uid' => $agoraUid,
-            ]));
+            $server->push($targetFd, json_encode(['type' => 'call.accepted', 'agora_uid' => $agoraUid]));
 
-            // Broadcast new participant to whole room
-            $targetConn = static::$connections[$targetFd] ?? [];
             static::broadcastToRoom($server, $roomId, [
-                'type'      => 'call.joined',
-                'user_id'   => $userId,
-                'username'  => $targetConn['username'] ?? '',
-                'avatar'    => $targetConn['avatar']   ?? '',
-                'agora_uid' => $agoraUid,
+                'type'       => 'call.joined',
+                'user_id'    => $userId,
+                'username'   => $targetConn['username'] ?? '',
+                'avatar'     => $targetConn['avatar']   ?? '',
+                'agora_uid'  => $agoraUid,
+                'camera_off' => true,
             ]);
         } else {
             $server->push($targetFd, json_encode(['type' => 'call.rejected']));
@@ -940,59 +1019,57 @@ class WebSocketHandler
         $roomId = $conn['room_id'];
         if (! $roomId) return;
 
-        Redis::srem("call:{$roomId}:participants", $conn['user_id']);
-
-        static::broadcastToRoom($server, $roomId, [
-            'type'    => 'call.left',
-            'user_id' => $conn['user_id'],
-        ]);
+        Redis::hdel("call:{$roomId}:participants", $conn['user_id']);
+        static::broadcastToRoom($server, $roomId, ['type' => 'call.left', 'user_id' => $conn['user_id']]);
     }
 
     private static function handleCallKick(Server $server, int $fd, array $conn, array $data): void
     {
-        $roomId   = $conn['room_id'];
-        $userId   = (int) ($data['user_id'] ?? 0);
-
+        $roomId = $conn['room_id'];
+        $userId = (int) ($data['user_id'] ?? 0);
         if (! $roomId || ! $userId) return;
 
         $room = Room::find($roomId);
         if ($room?->host_user_id !== $conn['user_id']) return;
 
-        Redis::srem("call:{$roomId}:participants", $userId);
+        Redis::hdel("call:{$roomId}:participants", $userId);
 
         $targetFd = static::getFdByUserId($userId);
         if ($targetFd && $server->isEstablished($targetFd)) {
-            $server->push($targetFd, json_encode([
-                'type'    => 'call.kicked',
-                'user_id' => $userId,
-                'room_id' => $roomId,
-            ]));
+            $server->push($targetFd, json_encode(['type' => 'call.kicked', 'user_id' => $userId, 'room_id' => $roomId]));
         }
 
-        static::broadcastToRoom($server, $roomId, [
-            'type'    => 'call.kicked',
-            'user_id' => $userId,
-        ], exclude: $targetFd ?? -1);
+        static::broadcastToRoom($server, $roomId, ['type' => 'call.kicked', 'user_id' => $userId], exclude: $targetFd ?? -1);
+    }
+
+    // ── Background Change ─────────────────────────────────────────────────────
+
+    private static function handleBgChange(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId = $conn['room_id'];
+        if (! $roomId) return;
+
+        $room = \App\Models\Room::find($roomId);
+        if ($room?->host_user_id !== $conn['user_id']) return;
+
+        $bgUrl = $data['bg_url'] ?? null;
+        if (! $bgUrl) return;
+
+        $room->update(['current_bg_url' => $bgUrl]);
+
+        static::broadcastToRoom($server, $roomId, ['type' => 'room.bg_change', 'bg_url' => $bgUrl]);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private static function broadcastToRoom(
-        Server $server,
-        string $roomId,
-        array  $payload,
-        int    $exclude = -1
-    ): void {
+    private static function broadcastToRoom(Server $server, string $roomId, array $payload, int $exclude = -1): void
+    {
         $fds  = Redis::smembers("room:{$roomId}:fds");
         $json = json_encode($payload);
 
         foreach ($fds as $fd) {
             $fd = (int) $fd;
-
-            if ($fd === $exclude) {
-                continue;
-            }
-
+            if ($fd === $exclude) continue;
             if ($server->isEstablished($fd)) {
                 $server->push($fd, $json);
             } else {
@@ -1004,25 +1081,17 @@ class WebSocketHandler
     private static function getHostFd(string $roomId): ?int
     {
         $hostUserId = Room::where('id', $roomId)->value('host_user_id');
-
-        if (! $hostUserId) {
-            return null;
-        }
-
+        if (! $hostUserId) return null;
         return static::getFdByUserId($hostUserId);
     }
 
     private static function getFdByUserId(int $userId): ?int
     {
-        // Check local worker connections first (fastest)
         foreach (static::$connections as $fd => $conn) {
-            if ($conn['user_id'] === $userId) {
-                return (int) $fd;
-            }
+            if ($conn['user_id'] === $userId) return (int) $fd;
         }
-
-        // Fall back to Redis for cross-worker lookup
-        $fd = Redis::get("ws:user:{$userId}:fd");
-        return $fd !== null ? (int) $fd : null;
+        $fds = Redis::smembers("ws:user:{$userId}:fds");
+        foreach ($fds as $fd) return (int) $fd;
+        return null;
     }
 }

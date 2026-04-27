@@ -21,6 +21,11 @@ class SettingsController extends Controller
             'max_viewers', 'pk_duration', 'max_seats',
             'welcome_bonus', 'gift_fee_pct',
             'game_callback_secret', 'game_allowed_domains',
+            // App version & update settings
+            'app_latest_version', 'app_min_version',
+            'app_android_url', 'app_ios_url',
+            'app_update_title', 'app_update_message',
+            'app_maintenance_mode', 'app_maintenance_message',
         ];
 
         foreach ($request->only($allowed) as $key => $value) {

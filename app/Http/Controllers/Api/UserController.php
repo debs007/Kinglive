@@ -34,6 +34,85 @@ class UserController extends Controller
         return response()->json($followers);
     }
 
+    /** Get users I have banned (room bans placed by me as host) */
+    public function myBannedUsers(): \Illuminate\Http\JsonResponse
+    {
+        $bans = \App\Models\UserBan::where('banned_by', auth()->id())
+            ->where('type', 'room')
+            ->where('is_active', true)
+            ->with('user:id,username,display_name,avatar_url,level')
+            ->orderByDesc('created_at')
+            ->get()
+            ->map(fn ($b) => [
+                'ban_id'       => $b->id,
+                'user_id'      => $b->user_id,
+                'username'     => $b->user->username     ?? '',
+                'display_name' => $b->user->display_name ?? null,
+                'avatar_url'   => $b->user->avatar_url   ?? null,
+                'level'        => $b->user->level        ?? 1,
+                'room_id'      => $b->room_id,
+                'reason'       => $b->reason,
+                'banned_at'    => $b->created_at?->toDateTimeString(),
+            ]);
+
+        return response()->json($bans);
+    }
+
+    /** Unban a user (remove room ban placed by me) */
+    public function unbanUser(int $userId): \Illuminate\Http\JsonResponse
+    {
+        \App\Models\UserBan::where('banned_by', auth()->id())
+            ->where('user_id', $userId)
+            ->where('type', 'room')
+            ->update(['is_active' => false]);
+
+        return response()->json(['ok' => true]);
+    }
+
+    /** Get followers of any user */
+    public function getUserFollowers(int $id): JsonResponse
+    {
+        $authUser  = auth()->user();
+        $myFollowing = $authUser->following()->pluck('following_id')->toArray();
+
+        $followers = User::find($id)
+            ?->followers()
+            ->select('users.id', 'username', 'display_name', 'avatar_url', 'level')
+            ->get()
+            ->map(fn ($u) => [
+                'id'           => $u->id,
+                'username'     => $u->username,
+                'display_name' => $u->display_name,
+                'avatar_url'   => $u->avatar_url,
+                'level'        => $u->level,
+                'is_following' => in_array($u->id, $myFollowing),
+            ]);
+
+        return response()->json($followers ?? []);
+    }
+
+    /** Get users that a user is following */
+    public function getUserFollowing(int $id): JsonResponse
+    {
+        $authUser    = auth()->user();
+        $myFollowing = $authUser->following()->pluck('following_id')->toArray();
+
+        $following = User::find($id)
+            ?->following()
+            ->select('users.id', 'username', 'display_name', 'avatar_url', 'level')
+            ->get()
+            ->map(fn ($u) => [
+                'id'           => $u->id,
+                'username'     => $u->username,
+                'display_name' => $u->display_name,
+                'avatar_url'   => $u->avatar_url,
+                'level'        => $u->level,
+                'is_following' => in_array($u->id, $myFollowing),
+            ]);
+
+        return response()->json($following ?? []);
+    }
+
     public function follow(int $id): JsonResponse
     {
         $user = auth()->user();

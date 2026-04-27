@@ -2,7 +2,9 @@
 
 namespace App\Jobs;
 
+use App\Models\CoinTransaction;
 use App\Models\Room;
+use App\Models\User;
 use App\Services\LiveRoomService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -33,13 +35,39 @@ class CleanupStaleRoomsJob implements ShouldQueue
 
     public function handle(LiveRoomService $roomService): void
     {
-        $staleRooms = Room::where('status', 'live')
+        $liveRooms = Room::where('status', 'live')
             ->where('started_at', '<=', now()->subSeconds(self::GRACE_PERIOD))
             ->get(['id', 'host_user_id', 'title']);
 
-        foreach ($staleRooms as $room) {
-            if ($this->isHostHeartbeatStale($room->id, $room->host_user_id)) {
+        foreach ($liveRooms as $room) {
+            // Clean stale seats — users who are in Redis seats but no longer connected
+            $this->cleanStaleSeats($room->id);
+
+            $stale = $this->isHostHeartbeatStale($room->id, $room->host_user_id)
+                  || $this->hasNoViewers($room->id);
+
+            if ($stale) {
                 $this->endStaleRoom($room, $roomService);
+            }
+        }
+    }
+
+    private function cleanStaleSeats(string $roomId): void
+    {
+        $seats = Redis::hgetall("room:{$roomId}:seats") ?: [];
+        foreach ($seats as $seatIdx => $seatJson) {
+            $seatData = json_decode($seatJson, true);
+            if (! isset($seatData['user_id'])) continue;
+            $seatUserId = (int) $seatData['user_id'];
+
+            // Check if user still has an active WS connection in this room
+            $userFds  = Redis::smembers("ws:user:{$seatUserId}:fds") ?: [];
+            $roomFds  = Redis::smembers("room:{$roomId}:fds") ?: [];
+            $inRoom   = !empty(array_intersect($userFds, $roomFds));
+
+            if (! $inRoom) {
+                Redis::hdel("room:{$roomId}:seats", $seatIdx);
+                Log::info("CleanupSeats: cleared stale seat {$seatIdx} in room {$roomId} for user {$seatUserId}");
             }
         }
     }
@@ -60,14 +88,65 @@ class CleanupStaleRoomsJob implements ShouldQueue
         return $secondsAgo > self::HEARTBEAT_TIMEOUT;
     }
 
+    private function hasNoViewers(string $roomId): bool
+    {
+        $viewerCount = (int) (Redis::get("room:{$roomId}:viewers") ?? 0);
+        $fdsCount    = (int) Redis::scard("room:{$roomId}:fds");
+        // Room is empty if no viewers and no WS connections at all
+        return $viewerCount === 0 && $fdsCount === 0;
+    }
+
     private function endStaleRoom(Room $room, LiveRoomService $roomService): void
     {
         Log::info("CleanupStaleRooms: ending stale room {$room->id} '{$room->title}'");
 
-        $room->update([
-            'status'   => 'ended',
-            'ended_at' => now(),
-        ]);
+        $endedAt = now();
+        $room->update(['status' => 'ended', 'ended_at' => $endedAt]);
+
+        // ── Update host live stats ────────────────────────────────────────
+        $host = User::find($room->host_user_id);
+        if ($host) {
+            $startedAt    = $room->started_at ?? $room->created_at;
+            $durationMins = (int) $startedAt->diffInMinutes($endedAt);
+            $durationHours = (int) floor($durationMins / 60);
+
+            $updates = [
+                'total_live_minutes' => \DB::raw("total_live_minutes + {$durationMins}"),
+                'total_live_hours'   => \DB::raw("total_live_hours + {$durationHours}"),
+                'total_streams'      => \DB::raw('total_streams + 1'),
+            ];
+
+            if ($durationMins >= 40) {
+                $type    = $room->type;
+                $dayKey  = "live_day_counted:{$host->id}:{$type}:" . $endedAt->toDateString();
+                if (! Redis::get($dayKey)) {
+                    Redis::setex($dayKey, 86400, 1);
+                    if ($type === 'video') {
+                        $updates['video_live_days'] = \DB::raw('video_live_days + 1');
+                    } else {
+                        $updates['audio_live_days'] = \DB::raw('audio_live_days + 1');
+                    }
+                }
+
+                // Diamond reward for 40+ min video stream
+                if ($type === 'video') {
+                    $rewardKey = "diamond_reward_given:{$host->id}:" . $endedAt->toDateString();
+                    if (! Redis::get($rewardKey)) {
+                        Redis::setex($rewardKey, 86400, 1);
+                        $host->increment('diamond_balance', 5000);
+                        CoinTransaction::create([
+                            'user_id'      => $host->id,
+                            'type'         => 'live_reward',
+                            'amount'       => 5000,
+                            'balance_after'=> $host->fresh()->diamond_balance,
+                            'reference'    => "live_reward:room:{$room->id}",
+                        ]);
+                    }
+                }
+            }
+
+            $host->update($updates);
+        }
 
         $roomService->cleanupRoom($room->id);
     }

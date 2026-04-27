@@ -9,7 +9,7 @@
 
 <div class="card">
     <form method="GET" class="filter-form" style="margin-bottom:16px">
-        <input type="text" name="search" placeholder="Search username, email, phone…" value="{{ request('search') }}" style="width:260px">
+        <input type="text" name="search" placeholder="Search username, email, phone, ID…" value="{{ request('search') }}" style="width:280px" title="You can search by display ID (e.g. 100023)">
         <select name="role">
             <option value="">All Roles</option>
             @foreach(['user','host','moderator','admin','super_admin'] as $r)
@@ -26,7 +26,7 @@
 
     <table class="admin-table">
         <thead>
-            <tr><th>User</th><th>Role</th><th>Coins</th><th>Diamonds</th><th>Rooms</th><th>Followers</th><th>Joined</th><th>Status</th><th>Actions</th></tr>
+            <tr><th>User</th><th>ID</th><th>Role</th><th>Coins</th><th>Diamonds</th><th>Rooms</th><th>Followers</th><th>Joined</th><th>Status</th><th>Actions</th></tr>
         </thead>
         <tbody>
             @forelse($users as $user)
@@ -40,6 +40,7 @@
                         </div>
                     </div>
                 </td>
+                <td style="font-size:12px;color:var(--text3)">{{ $user->id + 100000 }}</td>
                 <td><span class="badge {{ $user->role === 'super_admin' ? 'badge-global' : ($user->role === 'admin' ? 'badge-room' : 'badge-active') }}">{{ strtoupper(str_replace('_',' ',$user->role)) }}</span></td>
                 <td class="text-amber">{{ number_format($user->coin_balance) }}</td>
                 <td class="text-blue">{{ number_format($user->diamond_balance) }}</td>
@@ -62,7 +63,7 @@
                 </td>
             </tr>
             @empty
-            <tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text3)">No users found.</td></tr>
+            <tr><td colspan="10" style="text-align:center;padding:40px;color:var(--text3)">No users found.</td></tr>
             @endforelse
         </tbody>
     </table>

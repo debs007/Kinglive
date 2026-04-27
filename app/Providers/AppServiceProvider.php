@@ -12,6 +12,7 @@ use App\Services\OtpService;
 use App\Services\WalletService;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Support\Facades\URL;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -29,6 +30,10 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        
+        
+            URL::forceScheme('https');
+        
         // Global Blade helper: setting('key', 'default')
         Blade::directive('setting', function ($expression) {
             return "<?php echo \App\Models\Setting::get({$expression}); ?>";

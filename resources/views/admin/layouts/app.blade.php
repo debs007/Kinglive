@@ -168,6 +168,9 @@
     <a href="{{ route('admin.rooms.index') }}" class="nav-item {{ request()->routeIs('admin.rooms.*') ? 'active' : '' }}">
         <span>📺</span> Live Rooms
     </a>
+    <a href="{{ route('admin.backgrounds.index') }}" class="nav-item {{ request()->routeIs('admin.backgrounds.*') ? 'active' : '' }}">
+        <span>🖼️</span> Backgrounds
+    </a>
 
     <div class="nav-section">Economy</div>
     <a href="{{ route('admin.gifts.manage') }}" class="nav-item {{ request()->routeIs('admin.gifts.manage') ? 'active' : '' }}">
@@ -188,6 +191,21 @@
     </a>
     <a href="{{ route('admin.games.report') }}" class="nav-item {{ request()->routeIs('admin.games.report') ? 'active' : '' }}">
         <span>📈</span> Game Reports
+    </a>
+
+    <div class="nav-section">Content</div>
+    <a href="{{ route('admin.banners.index') }}" class="nav-item {{ request()->routeIs('admin.banners.*') ? 'active' : '' }}">
+        <span>🖼</span> Banners
+    </a>
+
+    <div class="nav-section">Coin Sellers</div>
+    <a href="{{ route('admin.coin_sellers.index') }}" class="nav-item {{ request()->routeIs('admin.coin_sellers.*') ? 'active' : '' }}">
+        <span>🪙</span> Coin Sellers
+    </a>
+
+    <div class="nav-section">Agencies</div>
+    <a href="{{ route('admin.agencies.index') }}" class="nav-item {{ request()->routeIs('admin.agencies.*') ? 'active' : '' }}">
+        <span>🏢</span> Agencies
     </a>
 
     <div class="nav-section">System</div>

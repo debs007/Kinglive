@@ -13,10 +13,13 @@ class WebSocketServer
         $server = new Server("0.0.0.0", 9502);
 
         $server->set([
-            'worker_num' => swoole_cpu_num(),
-            'max_request' => 10000,
+            'worker_num' => 1,
+            'max_request' => 50000,
+            'max_connection' => 100000,
             'dispatch_mode' => 2,
             'daemonize' => false,
+            'heartbeat_idle_time' => 120,
+            'heartbeat_check_interval' => 30,
         ]);
 
         $server->on('start', function () {

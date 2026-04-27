@@ -8,20 +8,17 @@ use Symfony\Component\HttpFoundation\Response;
 
 class AdminAuthenticate
 {
-    public function handle(Request $request, Closure $next): Response
-    {
-        if (! auth()->check()) {
-            return $request->expectsJson()
-                ? response()->json(['message' => 'Unauthenticated.'], 401)
-                : redirect()->route('admin.login');
+    public function handle($request, Closure $next)
+        {
+            // 👇 ONLY apply to admin routes
+            if (! $request->is('admin') && ! $request->is('admin/*')) {
+                return $next($request);
+            }
+        
+            if (! auth()->guard('admin')->check()) {
+                return redirect()->route('admin.login');
+            }
+        
+            return $next($request);
         }
-
-        if (! in_array(auth()->user()->role, ['admin', 'super_admin', 'moderator'])) {
-            return $request->expectsJson()
-                ? response()->json(['message' => 'Forbidden.'], 403)
-                : redirect()->route('admin.login')->withErrors(['Access denied.']);
-        }
-
-        return $next($request);
-    }
 }

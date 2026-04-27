@@ -71,6 +71,97 @@
         </div>
     </div>
 
+    {{-- App Version & Force Update --}}
+    <div class="dashboard-row">
+        <div class="card" style="flex:1">
+            <div class="card-header">
+                <h3>📱 App Version & Updates</h3>
+                <small style="color:var(--text3)">Control what version users must have to use the app</small>
+            </div>
+
+            <div class="dashboard-row" style="gap:16px">
+                <div class="form-group" style="flex:1">
+                    <label>Latest Version <small style="color:var(--text3)">(e.g. 1.2.0)</small></label>
+                    <input type="text" name="app_latest_version"
+                           value="{{ setting('app_latest_version', '1.0.0') }}"
+                           placeholder="1.2.0">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label>Minimum Required Version <small style="color:var(--text3)">(force update below this)</small></label>
+                    <input type="text" name="app_min_version"
+                           value="{{ setting('app_min_version', '1.0.0') }}"
+                           placeholder="1.0.0">
+                </div>
+            </div>
+
+            <div class="dashboard-row" style="gap:16px">
+                <div class="form-group" style="flex:1">
+                    <label>Android Update URL <small style="color:var(--text3)">(Play Store link)</small></label>
+                    <input type="text" name="app_android_url"
+                           value="{{ setting('app_android_url', '') }}"
+                           placeholder="https://play.google.com/store/apps/details?id=...">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label>iOS Update URL <small style="color:var(--text3)">(App Store link)</small></label>
+                    <input type="text" name="app_ios_url"
+                           value="{{ setting('app_ios_url', '') }}"
+                           placeholder="https://apps.apple.com/app/...">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Update Title <small style="color:var(--text3)">(shown in dialog)</small></label>
+                <input type="text" name="app_update_title"
+                       value="{{ setting('app_update_title', 'Update Available') }}"
+                       placeholder="New Update Available!">
+            </div>
+
+            <div class="form-group">
+                <label>Update Message <small style="color:var(--text3)">(what's new / why they should update)</small></label>
+                <textarea name="app_update_message" rows="3"
+                    style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:9px 12px;border-radius:6px;font-size:13px;resize:vertical"
+                    placeholder="We've added exciting new features and fixed bugs. Please update to continue.">{{ setting('app_update_message', '') }}</textarea>
+            </div>
+
+            <div class="form-group">
+                <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+                    <input type="hidden" name="app_maintenance_mode" value="0">
+                    <input type="checkbox" name="app_maintenance_mode" value="1"
+                           {{ setting('app_maintenance_mode', '0') == '1' ? 'checked' : '' }}
+                           style="width:16px;height:16px">
+                    <span>🔧 Maintenance Mode <small style="color:var(--text3)">(blocks all app access with maintenance message)</small></span>
+                </label>
+            </div>
+
+            <div class="form-group">
+                <label>Maintenance Message</label>
+                <input type="text" name="app_maintenance_message"
+                       value="{{ setting('app_maintenance_message', 'We are under maintenance. Please check back soon.') }}"
+                       placeholder="We are under maintenance...">
+            </div>
+
+            {{-- Preview of what the dialog looks like --}}
+            <div style="background:var(--bg3);border-radius:10px;padding:16px;margin-top:8px">
+                <div style="font-size:11px;color:var(--text3);margin-bottom:8px">📋 DIALOG PREVIEW</div>
+                <div style="background:var(--bg2);border-radius:10px;padding:16px;max-width:300px;margin:0 auto;border:1px solid var(--border)">
+                    <div style="font-size:20px;text-align:center;margin-bottom:8px">🚀</div>
+                    <div style="font-weight:700;text-align:center;color:var(--text);margin-bottom:6px" id="previewTitle">
+                        {{ setting('app_update_title', 'Update Available') }}
+                    </div>
+                    <div style="font-size:12px;color:var(--text3);text-align:center;margin-bottom:12px" id="previewMsg">
+                        {{ setting('app_update_message', 'Please update to continue.') }}
+                    </div>
+                    <div style="background:#9b59b6;color:white;text-align:center;padding:8px;border-radius:6px;font-size:13px;font-weight:600">
+                        Update Now
+                    </div>
+                    <div style="text-align:center;margin-top:8px;font-size:11px;color:var(--text3)">
+                        (Force update: no dismiss button shown)
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div style="text-align:right;margin-top:4px">
         <button type="submit" class="btn-primary" style="padding:12px 36px;font-size:15px">
             💾 Save Settings

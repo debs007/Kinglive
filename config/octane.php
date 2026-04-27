@@ -71,7 +71,10 @@ return [
         \App\Services\GiftService::class,
     ],
 
-    'flush' => [],
+    'flush' => [
+        \Illuminate\Auth\AuthManager::class,
+        \Illuminate\Session\SessionManager::class,
+        ],
 
     'garbage' => [
         'collector' => env('OCTANE_GARBAGE_COLLECTOR', 'default'),
