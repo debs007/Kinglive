@@ -60,7 +60,22 @@ class WebSocketHandler
             'avatar'   => $user->avatar_url,
             'level'    => $user->level,
         ];
-
+        
+        // Clean stale fds for this user before adding new one
+        $oldFds = Redis::smembers("ws:user:{$user->id}:fds");
+        foreach ($oldFds as $oldFd) {
+            $oldFd = (int) $oldFd;
+            if (!$server->isEstablished($oldFd)) {
+                Redis::srem("ws:user:{$user->id}:fds", $oldFd);
+                Redis::del("ws:fd:{$oldFd}:user");
+                if (isset(static::$connections[$oldFd]['room_id'])) {
+                    $staleRoom = static::$connections[$oldFd]['room_id'];
+                    Redis::srem("room:{$staleRoom}:fds", $oldFd);
+                }
+                unset(static::$connections[$oldFd]);
+            }
+        }
+        //stale work done
         Redis::sadd("ws:user:{$user->id}:fds", $fd);
         Redis::expire("ws:user:{$user->id}:fds", 86400);
         Redis::setex("ws:fd:{$fd}:user", 86400, $user->id);
@@ -400,7 +415,7 @@ class WebSocketHandler
         Redis::setex($pendingKey, 60, $conn['user_id']);
         Redis::setex($userPendingKey, 60, $seatIndex);
 
-        $hostFd = static::getHostFd($roomId);
+        $hostFd = static::getHostFd($roomId,$server);
         if ($hostFd && $server->isEstablished($hostFd)) {
             $server->push($hostFd, json_encode([
                 'type'       => 'seat.request',
@@ -648,7 +663,7 @@ class WebSocketHandler
             'challenger_avatar' => $conn['avatar'],
         ]));
 
-        $hostFd = static::getHostFd($targetRoomId);
+        $hostFd = static::getHostFd($targetRoomId,$server);
         if ($hostFd && $server->isEstablished($hostFd)) {
             $server->push($hostFd, json_encode([
                 'type'               => 'pk.invite',
@@ -965,7 +980,7 @@ class WebSocketHandler
             return;
         }
 
-        $hostFd = static::getHostFd($roomId);
+        $hostFd = static::getHostFd($roomId,$server);
         if ($hostFd && $server->isEstablished($hostFd)) {
             $server->push($hostFd, json_encode([
                 'type'     => 'call.request',
@@ -1082,20 +1097,28 @@ class WebSocketHandler
         }
     }
 
-    private static function getHostFd(string $roomId): ?int
+    private static function getHostFd(string $roomId, ?Server $server = null): ?int
     {
         $hostUserId = Room::where('id', $roomId)->value('host_user_id');
         if (! $hostUserId) return null;
-        return static::getFdByUserId($hostUserId);
+        return static::getFdByUserId($hostUserId, $server);
     }
 
-    private static function getFdByUserId(int $userId): ?int
+    private static function getFdByUserId(int $userId, ?Server $server = null): ?int
     {
         foreach (static::$connections as $fd => $conn) {
             if ($conn['user_id'] === $userId) return (int) $fd;
         }
         $fds = Redis::smembers("ws:user:{$userId}:fds");
-        foreach ($fds as $fd) return (int) $fd;
+        foreach ($fds as $fd) {
+            $fd = (int) $fd;
+            if ($server && !$server->isEstablished($fd)) {
+                Redis::srem("ws:user:{$userId}:fds", $fd);
+                Redis::del("ws:fd:{$fd}:user");
+                continue;
+            }
+            return $fd;
+        }
         return null;
     }
 }
