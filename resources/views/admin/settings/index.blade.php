@@ -161,6 +161,72 @@
             </div>
         </div>
     </div>
+    
+    {{-- ── Agora Credentials ─────────────────────────────────────────────────────
+     Add this section inside your existing settings form in
+     resources/views/admin/settings/index.blade.php
+     Place it after the App Version section.
+──────────────────────────────────────────────────────────────────────────── --}}
+
+<div class="card" style="margin-bottom:24px">
+    <div class="card-header" style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:20px">🎙️</span>
+        <h3 style="margin:0">Agora Credentials</h3>
+    </div>
+
+    <div style="padding:20px">
+        <div style="background:rgba(231,76,60,0.1);border:1px solid rgba(231,76,60,0.3);border-radius:8px;padding:12px 16px;margin-bottom:20px;display:flex;gap:10px;align-items:flex-start">
+            <span style="font-size:16px">⚠️</span>
+            <div style="font-size:13px;color:#e74c3c">
+                <strong>Keep your App Certificate secret.</strong>
+                It is never sent to the frontend — only the App ID is shared with clients.
+                Changing these values takes effect immediately for all new token generations.
+            </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div class="form-group">
+                <label>Agora App ID
+                    <small style="color:var(--text3);font-weight:400">(sent to app)</small>
+                </label>
+                <input type="text"
+                       name="agora_app_id"
+                       value="{{ \App\Models\Setting::get('agora_app_id', '') }}"
+                       placeholder="e.g. a1b2c3d4e5f6..."
+                       style="font-family:monospace;font-size:13px">
+                <small style="color:var(--text3)">Your Agora project App ID from console.agora.io</small>
+            </div>
+
+            <div class="form-group">
+                <label>Agora App Certificate
+                    <small style="color:var(--text3);font-weight:400">(secret — backend only)</small>
+                </label>
+                <input type="password"
+                       name="agora_app_certificate"
+                       value="{{ \App\Models\Setting::get('agora_app_certificate', '') }}"
+                       placeholder="App Certificate"
+                       style="font-family:monospace;font-size:13px">
+                <small style="color:var(--text3)">Used to sign tokens server-side. Never exposed to clients.</small>
+            </div>
+        </div>
+
+        <div style="margin-top:12px;padding:12px 16px;background:var(--bg3);border-radius:8px;font-size:12px;color:var(--text3)">
+            <strong style="color:var(--text)">Current status:</strong>
+            @php
+                $appId   = \App\Models\Setting::get('agora_app_id', '');
+                $cert    = \App\Models\Setting::get('agora_app_certificate', '');
+            @endphp
+            @if($appId && $cert)
+                <span style="color:#27ae60">✓ Credentials configured</span>
+                — App ID: <code style="font-size:11px">{{ substr($appId, 0, 8) }}•••••••••••••</code>
+            @else
+                <span style="color:#e74c3c">✗ Not configured</span>
+                — Live streaming will not work until both fields are set.
+            @endif
+        </div>
+    </div>
+</div>
+
 
     <div style="text-align:right;margin-top:4px">
         <button type="submit" class="btn-primary" style="padding:12px 36px;font-size:15px">

@@ -93,10 +93,24 @@ class BaishunGameController extends Controller
         Cache::put('baishun_code_' . $code, $uid, 3600);
 
         // Game list (filter active only)
-        $games = array_values(array_filter(
-            self::GAME_LIST,
-            fn ($g) => ($g['status'] ?? 0) === 1
-        ));
+        // $games = array_values(array_filter(
+        //     self::GAME_LIST,
+        //     fn ($g) => ($g['status'] ?? 0) === 1
+        // ));
+        
+        $games = Cache::remember('baishun_games', 60, function () {
+            return \App\Models\Game::active()
+                ->get()
+                ->map(fn ($game) => [
+                    'id'     => (int) $game->game_id,
+                    'name'   => $game->name,
+                    'icon'   => $game->thumbnail_url,
+                    'url'    => $game->url,
+                    'status' => $game->is_active ? 1 : 0,
+                ])
+                ->values()
+                ->toArray();
+        });
 
         $data = [
             'appChannel' => self::APP_CHANNEL,

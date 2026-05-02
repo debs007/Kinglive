@@ -14,6 +14,12 @@ use Tymon\JWTAuth\Facades\JWTAuth;
 
 /**
  * King Live — Swoole WebSocket Handler
+ *
+ * Fixed issues:
+ * 1. Host room-end on any tab close — now checks for other active host connections
+ * 2. Stale seat cleanup in handleRoomJoin was removing valid seated users
+ * 3. Seat request/response race conditions allowing duplicate/overwritten seats
+ * 4. Host reconnect to 'ended' room causing stuck 'connecting' screen
  */
 class WebSocketHandler
 {
@@ -60,12 +66,12 @@ class WebSocketHandler
             'avatar'   => $user->avatar_url,
             'level'    => $user->level,
         ];
-        
+
         // Clean stale fds for this user before adding new one
         $oldFds = Redis::smembers("ws:user:{$user->id}:fds");
         foreach ($oldFds as $oldFd) {
             $oldFd = (int) $oldFd;
-            if (!$server->isEstablished($oldFd)) {
+            if (! $server->isEstablished($oldFd)) {
                 Redis::srem("ws:user:{$user->id}:fds", $oldFd);
                 Redis::del("ws:fd:{$oldFd}:user");
                 if (isset(static::$connections[$oldFd]['room_id'])) {
@@ -146,20 +152,52 @@ class WebSocketHandler
 
             static::removeFromRoom($server, $fd, $conn);
 
+            // FIX #1: Only end the room if the host has NO other active connections
+            // in this room. Prevents stream death when host refreshes or closes a secondary tab.
             if ($isHost) {
-                $room?->update(['status' => 'ended', 'ended_at' => now()]);
-                static::broadcastToRoom($server, $roomId, [
-                    'type'    => 'room.ended',
-                    'room_id' => $roomId,
-                ]);
-                Redis::del(
-                    "room:{$roomId}:fds",
-                    "room:{$roomId}:viewers",
-                    "room:{$roomId}:seats",
-                    "room:{$roomId}:host_heartbeat",
-                    "room:{$roomId}:heartbeats",
-                );
-                Log::info("WS: host ended room {$roomId}");
+                $hostStillConnected = false;
+
+                // Check in-memory connections first (worker_num=1, this is primary truth)
+                foreach (static::$connections as $otherFd => $otherConn) {
+                    if ($otherFd !== $fd
+                        && $otherConn['user_id'] === $conn['user_id']
+                        && $otherConn['room_id'] === $roomId) {
+                        $hostStillConnected = true;
+                        break;
+                    }
+                }
+
+                // Fallback: check Redis room FDs for any other FD belonging to host
+                if (! $hostStillConnected) {
+                    $roomFds = Redis::smembers("room:{$roomId}:fds");
+                    foreach ($roomFds as $roomFd) {
+                        $roomFd = (int) $roomFd;
+                        if ($roomFd === $fd) continue;
+                        $roomUserId = Redis::get("ws:fd:{$roomFd}:user");
+                        if ((int) $roomUserId === $conn['user_id']) {
+                            $hostStillConnected = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (! $hostStillConnected) {
+                    $room?->update(['status' => 'ended', 'ended_at' => now()]);
+                    static::broadcastToRoom($server, $roomId, [
+                        'type'    => 'room.ended',
+                        'room_id' => $roomId,
+                    ]);
+                    Redis::del(
+                        "room:{$roomId}:fds",
+                        "room:{$roomId}:viewers",
+                        "room:{$roomId}:seats",
+                        "room:{$roomId}:host_heartbeat",
+                        "room:{$roomId}:heartbeats",
+                    );
+                    Log::info("WS: host ended room {$roomId} (no other connections)");
+                } else {
+                    Log::info("WS: host fd={$fd} closed but other connections remain in room {$roomId}, keeping room alive");
+                }
             }
         }
 
@@ -183,9 +221,16 @@ class WebSocketHandler
             return;
         }
 
+        // FIX #4: Allow host to rejoin an ended room and auto-resurrect it.
+        // Non-hosts are still blocked from joining ended rooms.
         if (! in_array($room->status, ['live', 'waiting'])) {
-            $server->push($fd, json_encode(['type' => 'error', 'message' => 'Room has ended.']));
-            return;
+            if ($room->host_user_id !== $conn['user_id']) {
+                $server->push($fd, json_encode(['type' => 'error', 'message' => 'Room has ended.']));
+                return;
+            }
+            // Host joining an ended room — resurrect it
+            $room->update(['status' => 'live', 'started_at' => now(), 'ended_at' => null]);
+            Log::info("WS: host resurrected room {$roomId}");
         }
 
         $banService = app(BanService::class);
@@ -196,10 +241,14 @@ class WebSocketHandler
 
         $conn['room_id'] = $roomId;
 
+        // Clean dead FDs from room set before adding this one
         $existingFds = Redis::smembers("room:{$roomId}:fds");
         foreach ($existingFds as $existingFd) {
+            $existingFd = (int) $existingFd;
+            if ($existingFd === $fd) continue;
             $existingUser = Redis::get("ws:fd:{$existingFd}:user");
-            if ($existingUser == $conn['user_id'] && $existingFd != $fd) {
+            // Remove dead FDs (no user mapping) OR old FDs for this same user
+            if (! $existingUser || (int) $existingUser === $conn['user_id']) {
                 Redis::srem("room:{$roomId}:fds", $existingFd);
             }
         }
@@ -221,43 +270,51 @@ class WebSocketHandler
             'viewer_count' => (int) Redis::get("room:{$roomId}:viewers"),
         ], exclude: $fd);
 
-        $allSeats = Redis::hgetall("room:{$roomId}:seats") ?: [];
-        foreach ($allSeats as $seatIdx => $seatJson) {
-            $seatData = json_decode($seatJson, true);
-            if (! isset($seatData['user_id'])) continue;
-            $seatUserId = (int) $seatData['user_id'];
-            $seatFd     = static::getFdByUserId($seatUserId);
-            if (! $seatFd || ! $server->isEstablished($seatFd)) {
-                Redis::hdel("room:{$roomId}:seats", $seatIdx);
-                static::broadcastToRoom($server, $roomId, ['type' => 'seat.vacated', 'seat_index' => (int) $seatIdx]);
-            }
-        }
+        // FIX #2: Removed aggressive stale seat cleanup that was wiping valid seats.
+        // onClose + removeFromRoom already handle seat cleanup when users disconnect.
+        // Proactive cleanup here was causing seated users to vanish for new joiners
+        // because getFdByUserId without $server could return a stale Redis fd.
 
         $chatRaw             = Redis::zrange("room:{$roomId}:chat", -50, -1);
         $chat                = array_map(fn ($c) => json_decode($c, true), $chatRaw);
         $callParticipantsRaw = Redis::hgetall("call:{$roomId}:participants") ?: [];
         $callParticipants    = array_values(array_map(fn ($p) => json_decode($p, true), $callParticipantsRaw));
 
-        // $server->push($fd, json_encode([
-        //     'type'              => 'room.state',
-        //     'viewer_count'      => (int) Redis::get("room:{$roomId}:viewers"),
-        //     'recent_chat'       => array_values($chat),
-        //     'seats'             => Redis::hgetall("room:{$roomId}:seats") ?: [],
-        //     'call_participants' => $callParticipants,
-        // ]));
-        
-        // Include current background so new joiners see it immediately
+        // Build seats array — decode JSON values for frontend consumption
+        $rawSeats = Redis::hgetall("room:{$roomId}:seats") ?: [];
+        $parsedSeats = [];
+        foreach ($rawSeats as $idx => $json) {
+            $parsed = json_decode($json, true);
+            if (is_array($parsed)) {
+                $parsedSeats[$idx] = $parsed;
+            }
+        }
+
         $room          = \App\Models\Room::find($roomId);
         $currentBgUrl  = $room?->current_bg_url;
-        
+
+        // FIX #4: Include room status and host_id so frontend knows stream is live
         $server->push($fd, json_encode([
             'type'              => 'room.state',
+            'room_id'           => $roomId,
+            'room_status'       => $room?->status ?? 'unknown',
+            'host_id'           => $room?->host_user_id,
             'viewer_count'      => (int) Redis::get("room:{$roomId}:viewers"),
             'recent_chat'       => array_values($chat),
-            'seats'             => Redis::hgetall("room:{$roomId}:seats") ?: [],
+            'seats'             => $parsedSeats,
             'call_participants' => $callParticipants,
             'current_bg_url'    => $currentBgUrl,
         ]));
+
+        // If host just joined/rejoined a live room, broadcast room.started so
+        // any viewers stuck on 'connecting' know the stream is active.
+        if ($room?->host_user_id === $conn['user_id'] && $room?->status === 'live') {
+            static::broadcastToRoom($server, $roomId, [
+                'type'    => 'room.started',
+                'room_id' => $roomId,
+                'host_id' => $conn['user_id'],
+            ], exclude: $fd);
+        }
 
         $pkSessionId = Redis::get("pk:room:{$roomId}");
         if ($pkSessionId) {
@@ -288,6 +345,8 @@ class WebSocketHandler
     private static function removeFromRoom(Server $server, int $fd, array &$conn): void
     {
         $roomId = $conn['room_id'];
+        if (! $roomId) return;
+
         Redis::srem("room:{$roomId}:fds", $fd);
 
         $room = Room::find($roomId);
@@ -298,6 +357,7 @@ class WebSocketHandler
 
         Redis::del("room:{$roomId}:user_pending:{$conn['user_id']}");
 
+        // Remove user from any seat they occupy
         $seats = Redis::hgetall("room:{$roomId}:seats") ?: [];
         foreach ($seats as $seatIndex => $seatJson) {
             $seat = json_decode($seatJson, true);
@@ -359,11 +419,6 @@ class WebSocketHandler
     // ── DM (Direct Message) ───────────────────────────────────────────────────
 
     /**
-     * Push a DM message WS event to the receiver.
-     * Called from DirectMessageController after saving the message.
-     * Uses a static method so it can be called from outside (via app()->make).
-     */
-    /**
      * Queue a DM message for delivery to a user via WebSocket.
      * Called from HTTP process (DirectMessageController) — cannot access
      * WS $connections directly. Stores in Redis, delivered on next ping.
@@ -388,6 +443,20 @@ class WebSocketHandler
         $seatIndex = (int) ($data['seat_index'] ?? -1);
         if (! $roomId || $seatIndex < 0) return;
 
+        // FIX #3: Prevent user from requesting a seat if they are already seated
+        $allSeats = Redis::hgetall("room:{$roomId}:seats") ?: [];
+        foreach ($allSeats as $idx => $seatJson) {
+            $seat = json_decode($seatJson, true);
+            if (($seat['user_id'] ?? null) == $conn['user_id']) {
+                $server->push($fd, json_encode([
+                    'type'       => 'seat.error',
+                    'message'    => 'You are already on a seat. Leave your current seat first.',
+                    'seat_index' => (int) $idx,
+                ]));
+                return;
+            }
+        }
+
         $userPendingKey = "room:{$roomId}:user_pending:{$conn['user_id']}";
         if (Redis::get($userPendingKey) !== null) {
             $server->push($fd, json_encode(['type' => 'seat.error', 'message' => 'You already have a pending seat request.']));
@@ -405,8 +474,8 @@ class WebSocketHandler
 
         $pendingKey = "room:{$roomId}:seat_request:{$seatIndex}";
         $prevUserId = Redis::get($pendingKey);
-        if ($prevUserId && $prevUserId != $conn['user_id']) {
-            $prevFd = static::getFdByUserId((int) $prevUserId);
+        if ($prevUserId && (int) $prevUserId !== $conn['user_id']) {
+            $prevFd = static::getFdByUserId((int) $prevUserId, $server);
             if ($prevFd && $server->isEstablished($prevFd)) {
                 $server->push($prevFd, json_encode(['type' => 'seat.response', 'accepted' => false, 'seat_index' => $seatIndex]));
             }
@@ -415,7 +484,7 @@ class WebSocketHandler
         Redis::setex($pendingKey, 60, $conn['user_id']);
         Redis::setex($userPendingKey, 60, $seatIndex);
 
-        $hostFd = static::getHostFd($roomId,$server);
+        $hostFd = static::getHostFd($roomId, $server);
         if ($hostFd && $server->isEstablished($hostFd)) {
             $server->push($hostFd, json_encode([
                 'type'       => 'seat.request',
@@ -439,12 +508,50 @@ class WebSocketHandler
         $room = Room::find($roomId);
         if ($room?->host_user_id !== $conn['user_id']) return;
 
-        $targetFd = static::getFdByUserId($userId);
+        $targetFd = static::getFdByUserId($userId, $server);
 
         Redis::del("room:{$roomId}:seat_request:{$seatIndex}");
         Redis::del("room:{$roomId}:user_pending:{$userId}");
 
         if ($accepted) {
+            // FIX #3: Verify the target user is still connected
+            if (! $targetFd || ! $server->isEstablished($targetFd)) {
+                $server->push($fd, json_encode([
+                    'type'    => 'seat.error',
+                    'message' => 'User is no longer connected.',
+                ]));
+                return;
+            }
+
+            // FIX #3: Double-check the seat is still vacant before assigning.
+            // Another response or a lock could have filled it since the request was made.
+            $currentSeatRaw = Redis::hget("room:{$roomId}:seats", $seatIndex);
+            if ($currentSeatRaw) {
+                $currentSeat = json_decode($currentSeatRaw, true);
+                if (isset($currentSeat['user_id']) && (int) $currentSeat['user_id'] !== $userId) {
+                    // Seat was taken by someone else — reject
+                    if ($targetFd && $server->isEstablished($targetFd)) {
+                        $server->push($targetFd, json_encode([
+                            'type'       => 'seat.response',
+                            'accepted'   => false,
+                            'seat_index' => -1,
+                            'message'    => 'Seat was taken by another user.',
+                        ]));
+                    }
+                    return;
+                }
+            }
+
+            // FIX #3: Also ensure the target user didn't end up in another seat somehow
+            foreach (Redis::hgetall("room:{$roomId}:seats") ?: [] as $idx => $seatJson) {
+                $seat = json_decode($seatJson, true);
+                if (($seat['user_id'] ?? null) == $userId && (int) $idx !== $seatIndex) {
+                    // User already in another seat — clean it up first
+                    Redis::hdel("room:{$roomId}:seats", $idx);
+                    static::broadcastToRoom($server, $roomId, ['type' => 'seat.vacated', 'seat_index' => (int) $idx]);
+                }
+            }
+
             $agoraUid = (int) $userId;
 
             Redis::hset("room:{$roomId}:seats", $seatIndex, json_encode([
@@ -536,7 +643,7 @@ class WebSocketHandler
 
         Redis::hdel("room:{$roomId}:seats", $seatIndex);
 
-        $targetFd = static::getFdByUserId((int) $userId);
+        $targetFd = static::getFdByUserId((int) $userId, $server);
         if ($targetFd && $server->isEstablished($targetFd)) {
             $server->push($targetFd, json_encode(['type' => 'seat.deboarded', 'seat_index' => $seatIndex]));
             $server->push($targetFd, json_encode(['type' => 'agora.demote']));
@@ -566,7 +673,7 @@ class WebSocketHandler
             roomId:       $roomId,
         );
 
-        $targetFd = static::getFdByUserId($targetUserId);
+        $targetFd = static::getFdByUserId($targetUserId, $server);
         if ($targetFd && $server->isEstablished($targetFd)) {
             $server->push($targetFd, json_encode(['type' => 'room.banned', 'room_id' => $roomId, 'message' => 'You have been banned from this room.']));
             $server->close($targetFd);
@@ -663,7 +770,7 @@ class WebSocketHandler
             'challenger_avatar' => $conn['avatar'],
         ]));
 
-        $hostFd = static::getHostFd($targetRoomId,$server);
+        $hostFd = static::getHostFd($targetRoomId, $server);
         if ($hostFd && $server->isEstablished($hostFd)) {
             $server->push($hostFd, json_encode([
                 'type'               => 'pk.invite',
@@ -690,7 +797,7 @@ class WebSocketHandler
         $invite = json_decode($raw, true);
 
         if (! $accepted) {
-            $challengerFd = static::getFdByUserId($invite['challenger_uid']);
+            $challengerFd = static::getFdByUserId($invite['challenger_uid'], $server);
             if ($challengerFd && $server->isEstablished($challengerFd)) {
                 $server->push($challengerFd, json_encode(['type' => 'pk.declined', 'pk_session_id' => $pkSessionId]));
             }
@@ -746,7 +853,7 @@ class WebSocketHandler
             'target_agora_uid'     => $targetAgoraUid,
         ];
 
-        $challengerHostFd = static::getFdByUserId($challengerAgoraUid);
+        $challengerHostFd = static::getFdByUserId($challengerAgoraUid, $server);
         if ($challengerHostFd && $server->isEstablished($challengerHostFd)) {
             $server->push($challengerHostFd, json_encode([
                 'type'            => 'pk.join_channel',
@@ -816,7 +923,7 @@ class WebSocketHandler
         $room = Room::find($roomId);
         if ($room?->host_user_id !== $conn['user_id']) return;
 
-        $targetFd = static::getFdByUserId($targetUserId);
+        $targetFd = static::getFdByUserId($targetUserId, $server);
         if ($targetFd && $server->isEstablished($targetFd)) {
             $server->push($targetFd, json_encode(['type' => 'mod.kicked', 'room_id' => $roomId]));
             $server->close($targetFd);
@@ -837,7 +944,7 @@ class WebSocketHandler
 
         Redis::setex("silence:{$targetUserId}:{$roomId}", $duration, 1);
 
-        $targetFd = static::getFdByUserId($targetUserId);
+        $targetFd = static::getFdByUserId($targetUserId, $server);
         if ($targetFd && $server->isEstablished($targetFd)) {
             $server->push($targetFd, json_encode(['type' => 'mod.silenced', 'duration' => $duration]));
         }
@@ -908,7 +1015,7 @@ class WebSocketHandler
             'challenger_avatar'  => $conn['avatar'],
         ];
 
-        $targetFd = static::getFdByUserId($targetUserId);
+        $targetFd = static::getFdByUserId($targetUserId, $server);
         if ($targetFd && $server->isEstablished($targetFd)) {
             $server->push($targetFd, json_encode($payload));
         } else {
@@ -941,7 +1048,7 @@ class WebSocketHandler
         ];
 
         foreach ($followerIds as $followerId) {
-            $targetFd = static::getFdByUserId($followerId);
+            $targetFd = static::getFdByUserId($followerId, $server);
             if ($targetFd && $server->isEstablished($targetFd)) {
                 $server->push($targetFd, json_encode($payload));
             } else {
@@ -980,7 +1087,7 @@ class WebSocketHandler
             return;
         }
 
-        $hostFd = static::getHostFd($roomId,$server);
+        $hostFd = static::getHostFd($roomId, $server);
         if ($hostFd && $server->isEstablished($hostFd)) {
             $server->push($hostFd, json_encode([
                 'type'     => 'call.request',
@@ -1001,7 +1108,7 @@ class WebSocketHandler
         $room = Room::find($roomId);
         if ($room?->host_user_id !== $conn['user_id']) return;
 
-        $targetFd = static::getFdByUserId($userId);
+        $targetFd = static::getFdByUserId($userId, $server);
         if (! $targetFd || ! $server->isEstablished($targetFd)) return;
 
         if ($accepted) {
@@ -1053,7 +1160,7 @@ class WebSocketHandler
 
         Redis::hdel("call:{$roomId}:participants", $userId);
 
-        $targetFd = static::getFdByUserId($userId);
+        $targetFd = static::getFdByUserId($userId, $server);
         if ($targetFd && $server->isEstablished($targetFd)) {
             $server->push($targetFd, json_encode(['type' => 'call.kicked', 'user_id' => $userId, 'room_id' => $roomId]));
         }
@@ -1104,15 +1211,28 @@ class WebSocketHandler
         return static::getFdByUserId($hostUserId, $server);
     }
 
+    /**
+     * FIX #2 / General: Always pass $server when available so the Redis fallback
+     * validates FDs with isEstablished() and purges stale entries.
+     */
     private static function getFdByUserId(int $userId, ?Server $server = null): ?int
     {
+        // In-memory check first (primary truth with worker_num=1)
         foreach (static::$connections as $fd => $conn) {
-            if ($conn['user_id'] === $userId) return (int) $fd;
+            if ($conn['user_id'] === $userId) {
+                // Even in-memory, verify with server if provided
+                if ($server && ! $server->isEstablished((int) $fd)) {
+                    continue;
+                }
+                return (int) $fd;
+            }
         }
+
+        // Redis fallback — iterate all cached FDs and validate each one
         $fds = Redis::smembers("ws:user:{$userId}:fds");
         foreach ($fds as $fd) {
             $fd = (int) $fd;
-            if ($server && !$server->isEstablished($fd)) {
+            if ($server && ! $server->isEstablished($fd)) {
                 Redis::srem("ws:user:{$userId}:fds", $fd);
                 Redis::del("ws:fd:{$fd}:user");
                 continue;

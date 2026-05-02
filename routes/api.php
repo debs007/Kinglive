@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\LeaderboardController;
 use App\Http\Controllers\Api\BaishunGameController;
 use App\Http\Controllers\Api\DirectMessageController;
 use App\Http\Controllers\Api\ReelController;
+use App\Http\Controllers\Api\AppConfigController;
 use App\Http\Controllers\Api\AppVersionController;
 //use App\Http\Controllers\Api\DirectMessage;
 /*
@@ -40,6 +41,7 @@ Route::prefix('v1')->group(function () {
     Route::get('banners',       [BannerController::class, 'apiIndex']);
     Route::get('leaderboard',  [LeaderboardController::class, 'index']);
     Route::get('app/version', [AppVersionController::class, 'check']);
+    Route::get('app/config',  [AppConfigController::class,  'config']);
     
     //Baishun
     Route::post('get_user_info',  [BaishunGameController::class, 'getUserInfo']);

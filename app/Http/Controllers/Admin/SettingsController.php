@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Setting;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 class SettingsController extends Controller
 {
@@ -26,10 +27,17 @@ class SettingsController extends Controller
             'app_android_url', 'app_ios_url',
             'app_update_title', 'app_update_message',
             'app_maintenance_mode', 'app_maintenance_message',
+            // Agora credentials
+            'agora_app_id', 'agora_app_certificate',
         ];
 
         foreach ($request->only($allowed) as $key => $value) {
             Setting::set($key, $value);
+        }
+
+        // Clear agora credentials cache so new values take effect immediately
+        if ($request->hasAny(['agora_app_id', 'agora_app_certificate'])) {
+            Cache::forget('agora_credentials');
         }
 
         return back()->with('success', 'Settings saved successfully.');
