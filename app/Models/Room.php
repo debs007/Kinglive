@@ -19,6 +19,7 @@ class Room extends Model
         'agora_channel_id', 'agora_token',
         'started_at', 'ended_at',
         'total_gifts_received', 'peak_viewer_count',
+        'current_bg_url',
     ];
 
     protected $hidden = ['agora_token', 'password'];

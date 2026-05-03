@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
-use App\Models\CoinTransaction;
 use App\Models\Game;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -12,56 +11,65 @@ class GameReportController extends Controller
 {
     public function report(Request $request)
     {
-        $from   = $request->input('from', now()->startOfMonth()->toDateString());
-        $to     = $request->input('to',   now()->endOfDay()->toDateString());
+        // Default to TODAY only — not the whole month
+        $from   = $request->input('from', now()->toDateString());
+        $to     = $request->input('to',   now()->toDateString());
         $gameId = $request->input('game_id');
 
-        $base = CoinTransaction::whereIn('type', ['game_bet', 'game_reward'])
-            ->whereBetween('created_at', [$from . ' 00:00:00', $to . ' 23:59:59'])
-            ->when($gameId, fn ($q) => $q->where('reference', 'like', "%game:{$gameId}:%"));
+        $fromDt = $from . ' 00:00:00';
+        $toDt   = $to   . ' 23:59:59';
 
-        // Summary totals
+        $gameFilter  = $gameId ? " AND reference LIKE :gameRef" : '';
+        $bindSummary = ['from' => $fromDt, 'to' => $toDt];
+        $bindReport  = ['from' => $fromDt, 'to' => $toDt];
+
+        if ($gameId) {
+            $bindSummary['gameRef'] = "%game:{$gameId}:%";
+            $bindReport['gameRef']  = "%game:{$gameId}:%";
+        }
+
+        // Summary — pure aggregation, no row loading
+        $summaryRow = DB::selectOne("
+            SELECT
+                COUNT(*)                                                         AS total_sessions,
+                COALESCE(SUM(CASE WHEN type = 'game_bet'    THEN ABS(amount) ELSE 0 END), 0) AS total_coins_spent,
+                COALESCE(SUM(CASE WHEN type = 'game_reward' THEN amount       ELSE 0 END), 0) AS total_coins_won
+            FROM coin_transactions
+            WHERE type IN ('game_bet','game_reward')
+              AND created_at BETWEEN :from AND :to
+              AND reference LIKE '%game:%'
+              {$gameFilter}
+        ", $bindSummary);
+
         $summary = [
-            'total_sessions'    => (clone $base)->count(),
-            'total_coins_spent' => (clone $base)->where('type', 'game_bet')->sum(DB::raw('ABS(amount)')),
-            'total_coins_won'   => (clone $base)->where('type', 'game_reward')->sum('amount'),
+            'total_sessions'    => (int)   ($summaryRow->total_sessions    ?? 0),
+            'total_coins_spent' => (float) ($summaryRow->total_coins_spent ?? 0),
+            'total_coins_won'   => (float) ($summaryRow->total_coins_won   ?? 0),
             'house_profit'      => 0,
         ];
         $summary['house_profit'] = $summary['total_coins_spent'] - $summary['total_coins_won'];
 
-        // Per-game breakdown using PHP to parse reference field
-        // Avoids REGEXP_SUBSTR MySQL version issues
-        $allRecords = (clone $base)
-            ->select('type', 'amount', 'user_id', 'reference')
-            ->get();
+        // Per-game breakdown — pure SQL grouping using SUBSTRING_INDEX
+        $rows = DB::select("
+            SELECT
+                SUBSTRING_INDEX(SUBSTRING_INDEX(reference, 'game:', -1), ':', 1)  AS game_id,
+                COUNT(*)                                                            AS sessions,
+                COUNT(DISTINCT user_id)                                             AS unique_players,
+                COALESCE(SUM(CASE WHEN type = 'game_bet'    THEN ABS(amount) ELSE 0 END), 0) AS coins_spent,
+                COALESCE(SUM(CASE WHEN type = 'game_reward' THEN amount       ELSE 0 END), 0) AS coins_won,
+                COALESCE(SUM(CASE WHEN type = 'game_bet'    THEN ABS(amount) ELSE 0 END), 0) -
+                COALESCE(SUM(CASE WHEN type = 'game_reward' THEN amount       ELSE 0 END), 0) AS net
+            FROM coin_transactions
+            WHERE type IN ('game_bet','game_reward')
+              AND created_at BETWEEN :from AND :to
+              AND reference LIKE '%game:%'
+              {$gameFilter}
+            GROUP BY SUBSTRING_INDEX(SUBSTRING_INDEX(reference, 'game:', -1), ':', 1)
+            ORDER BY coins_spent DESC
+        ", $bindReport);
 
-        $grouped = [];
-        foreach ($allRecords as $r) {
-            preg_match('/game:(\d+)/', $r->reference ?? '', $m);
-            $gid = $m[1] ?? 'unknown';
-            if (!isset($grouped[$gid])) {
-                $grouped[$gid] = [
-                    'game_id'        => $gid,
-                    'sessions'       => 0,
-                    'unique_players' => [],
-                    'coins_spent'    => 0,
-                    'coins_won'      => 0,
-                ];
-            }
-            $grouped[$gid]['sessions']++;
-            $grouped[$gid]['unique_players'][$r->user_id] = true;
-            if ($r->type === 'game_bet')    $grouped[$gid]['coins_spent'] += abs($r->amount);
-            if ($r->type === 'game_reward') $grouped[$gid]['coins_won']   += $r->amount;
-        }
-
-        $report = collect($grouped)->map(function ($row) {
-            $row['unique_players'] = count($row['unique_players']);
-            $row['net']            = $row['coins_spent'] - $row['coins_won'];
-            return (object) $row;
-        })->sortByDesc('coins_spent')->values();
-
-        // Game IDs for filter dropdown — from local Game model
-        $games = Game::orderBy('name')->get(['id', 'name', 'game_id']);
+        $report = collect($rows);
+        $games  = Game::orderBy('name')->get(['id', 'name', 'game_id']);
 
         return view('admin.games.report', compact('report', 'games', 'summary', 'from', 'to'));
     }
@@ -85,7 +93,6 @@ class GameReportController extends Controller
         ]);
 
         Game::create($data + ['is_active' => true]);
-
         return back()->with('success', 'Game added successfully.');
     }
 
@@ -95,7 +102,6 @@ class GameReportController extends Controller
             'name', 'url', 'thumbnail_url', 'description',
             'min_bet', 'is_active', 'sort_order',
         ]));
-
         return back()->with('success', 'Game updated.');
     }
 }

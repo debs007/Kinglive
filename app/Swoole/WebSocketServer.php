@@ -14,7 +14,6 @@ class WebSocketServer
 
         $server->set([
             'worker_num' => 1,
-            'max_request' => 50000,
             'max_connection' => 100000,
             'dispatch_mode' => 2,
             'daemonize' => false,
