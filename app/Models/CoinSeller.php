@@ -8,14 +8,19 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class CoinSeller extends Model
 {
     protected $fillable = [
-        'name', 'email', 'password', 'coin_balance', 'total_sold', 'is_active', 'session_token',
+        'name', 'email', 'password',
+        'coin_balance', 'total_sold', 'is_active', 'session_token',
+        'price_per_100k', 'whatsapp_number',
     ];
 
     protected $hidden = ['password'];
 
     protected function casts(): array
     {
-        return ['is_active' => 'boolean'];
+        return [
+            'is_active'      => 'boolean',
+            'price_per_100k' => 'decimal:2',
+        ];
     }
 
     public function transactions(): HasMany

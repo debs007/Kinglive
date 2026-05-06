@@ -33,6 +33,7 @@ Route::prefix('coin-seller')->name('coin_seller.')->group(function () {
         Route::get ('users',                      [CoinSellerPortalController::class, 'users'])->name('users');
         Route::post('users/{id}/add-coins',       [CoinSellerPortalController::class, 'addCoins'])->name('users.add_coins');
         Route::get ('transactions',               [CoinSellerPortalController::class, 'transactions'])->name('transactions');
+        Route::post('update-profile',             [CoinSellerPortalController::class, 'updateProfile'])->name('update_profile');
     });
 });
 

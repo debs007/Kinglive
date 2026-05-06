@@ -23,17 +23,21 @@ class CoinSellerController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'name'     => ['required', 'string', 'max:100'],
-            'email'    => ['required', 'email', 'unique:coin_sellers,email'],
-            'password' => ['required', 'string', 'min:6'],
-            'coins'    => ['nullable', 'integer', 'min:0'],
+            'name'            => ['required', 'string', 'max:100'],
+            'email'           => ['required', 'email', 'unique:coin_sellers,email'],
+            'password'        => ['required', 'string', 'min:6'],
+            'coins'           => ['nullable', 'integer', 'min:0'],
+            'price_per_100k'  => ['nullable', 'numeric', 'min:0'],
+            'whatsapp_number' => ['nullable', 'string', 'max:20'],
         ]);
 
         CoinSeller::create([
-            'name'         => $request->name,
-            'email'        => $request->email,
-            'password'     => Hash::make($request->password),
-            'coin_balance' => $request->coins ?? 0,
+            'name'            => $request->name,
+            'email'           => $request->email,
+            'password'        => Hash::make($request->password),
+            'coin_balance'    => $request->coins ?? 0,
+            'price_per_100k'  => $request->price_per_100k,
+            'whatsapp_number' => $request->whatsapp_number,
         ]);
 
         return back()->with('success', 'Coin seller created successfully.');
@@ -41,13 +45,9 @@ class CoinSellerController extends Controller
 
     public function addCoins(Request $request, int $id)
     {
-        $request->validate([
-            'coins' => ['required', 'integer', 'min:1'],
-        ]);
-
+        $request->validate(['coins' => ['required', 'integer', 'min:1']]);
         $seller = CoinSeller::findOrFail($id);
         $seller->increment('coin_balance', $request->coins);
-
         return back()->with('success', "Added {$request->coins} coins to {$seller->name}.");
     }
 
@@ -64,8 +64,6 @@ class CoinSellerController extends Controller
         return back()->with('success', 'Coin seller deleted.');
     }
 
-    // ── Give coins directly to user (admin only, no balance limit) ────────────
-
     public function giveCoinsToUser(Request $request)
     {
         $request->validate([
@@ -74,14 +72,13 @@ class CoinSellerController extends Controller
             'note'    => ['nullable', 'string', 'max:255'],
         ]);
 
-        // Accept both numeric ID and username
         $user = is_numeric($request->user_id)
             ? User::findOrFail($request->user_id)
             : User::where('username', $request->user_id)->firstOrFail();
         $user->increment('coin_balance', $request->coins);
 
         CoinSellerTransaction::create([
-            'coin_seller_id' => null,  // null = admin
+            'coin_seller_id' => null,
             'user_id'        => $request->user_id,
             'coins'          => $request->coins,
             'type'           => 'admin_grant',
@@ -91,24 +88,19 @@ class CoinSellerController extends Controller
         return back()->with('success', "Added {$request->coins} coins to {$user->username}.");
     }
 
-    // ── Transaction report ────────────────────────────────────────────────────
-
     public function transactions(Request $request)
     {
         $transactions = CoinSellerTransaction::with([
                 'seller:id,name',
                 'user:id,username,avatar_url',
             ])
-            ->when($request->seller_id, fn($q) =>
-                $q->where('coin_seller_id', $request->seller_id))
-            ->when($request->type, fn($q) =>
-                $q->where('type', $request->type))
+            ->when($request->seller_id, fn($q) => $q->where('coin_seller_id', $request->seller_id))
+            ->when($request->type,      fn($q) => $q->where('type', $request->type))
             ->latest()
             ->paginate(30);
 
         $sellers = CoinSeller::orderBy('name')->get(['id', 'name']);
 
-        return view('admin.coin_sellers.transactions',
-            compact('transactions', 'sellers'));
+        return view('admin.coin_sellers.transactions', compact('transactions', 'sellers'));
     }
 }

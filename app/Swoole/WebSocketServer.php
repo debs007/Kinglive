@@ -10,6 +10,10 @@ class WebSocketServer
 {
     public static function start(): void
     {
+        if (class_exists(\Laravel\Telescope\Telescope::class)) {
+            \Laravel\Telescope\Telescope::stopRecording();
+        }
+        
         $server = new Server("0.0.0.0", 9502);
 
         $server->set([
@@ -30,7 +34,7 @@ class WebSocketServer
         });
 
         $server->on('message', function ($server, $frame) {
-            Log::info("WS MESSAGE-m: " . $frame->data);
+            //Log::info("WS MESSAGE-m: " . $frame->data);
             WebSocketHandler::onMessage($server, $frame);
         });
 

@@ -114,26 +114,138 @@
         </div>
         @endif
 
-        {{-- Coin History --}}
-        <div class="card">
-            <div class="card-header"><h3>Recent Coin Transactions</h3></div>
-            <table class="admin-table">
-                <thead><tr><th>Type</th><th>Amount</th><th>Balance After</th><th>Reference</th><th>Date</th></tr></thead>
-                <tbody>
-                    @foreach($coinHistory as $tx)
-                    <tr>
-                        <td>{{ ucwords(str_replace('_', ' ', $tx->type)) }}</td>
-                        <td class="{{ $tx->amount >= 0 ? 'text-success' : 'text-danger' }}">
-                            {{ $tx->amount >= 0 ? '+' : '' }}{{ number_format($tx->amount) }}
-                        </td>
-                        <td>{{ number_format($tx->balance_after) }}</td>
-                        <td class="text-muted" style="font-size:12px">{{ Str::limit($tx->reference ?? '—', 40) }}</td>
-                        <td class="text-muted">{{ $tx->created_at->format('M d H:i') }}</td>
-                    </tr>
-                    @endforeach
-                </tbody>
-            </table>
+        {{-- 
+  Replace the "Coin History" card in resources/views/admin/users/show.blade.php
+  with this entire block.
+--}}
+
+{{-- Coin Transaction History --}}
+<div class="card" style="margin-top:24px">
+    <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:18px">🪙</span>
+            <h3 style="margin:0">Coin Transactions</h3>
         </div>
+        <div style="font-size:12px;color:var(--text3)">
+            Showing: <strong>{{ \Carbon\Carbon::parse($from)->format('M d, Y') }}</strong>
+            @if($from !== $to) → <strong>{{ \Carbon\Carbon::parse($to)->format('M d, Y') }}</strong> @endif
+        </div>
+    </div>
+
+    {{-- Date Range Filter --}}
+    <div style="padding:16px 20px;border-bottom:1px solid var(--border)">
+        <form method="GET" action="{{ request()->url() }}" style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
+            <div>
+                <label style="display:block;font-size:12px;color:var(--text3);margin-bottom:4px">From</label>
+                <input type="date" name="from" value="{{ $from }}"
+                       style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">
+            </div>
+            <div>
+                <label style="display:block;font-size:12px;color:var(--text3);margin-bottom:4px">To</label>
+                <input type="date" name="to" value="{{ $to }}"
+                       style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">
+            </div>
+            <button type="submit" style="padding:8px 20px;border-radius:8px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:13px;font-weight:600">
+                🔍 Filter
+            </button>
+            <a href="{{ request()->url() }}"
+               style="padding:8px 16px;border-radius:8px;border:1px solid var(--border);color:var(--text3);font-size:13px;text-decoration:none">
+                Today
+            </a>
+            <a href="{{ request()->url() }}?from={{ now()->startOfWeek()->toDateString() }}&to={{ now()->toDateString() }}"
+               style="padding:8px 16px;border-radius:8px;border:1px solid var(--border);color:var(--text3);font-size:13px;text-decoration:none">
+                This Week
+            </a>
+            <a href="{{ request()->url() }}?from={{ now()->startOfMonth()->toDateString() }}&to={{ now()->toDateString() }}"
+               style="padding:8px 16px;border-radius:8px;border:1px solid var(--border);color:var(--text3);font-size:13px;text-decoration:none">
+                This Month
+            </a>
+        </form>
+    </div>
+
+    {{-- Summary Cards --}}
+    @if($summary)
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border)">
+        <div style="padding:16px 20px;background:var(--bg)">
+            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">Total Transactions</div>
+            <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:4px">{{ number_format($summary->total_tx) }}</div>
+        </div>
+        <div style="padding:16px 20px;background:var(--bg)">
+            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">Coins Received</div>
+            <div style="font-size:22px;font-weight:700;color:#27ae60;margin-top:4px">+{{ number_format($summary->total_in) }}</div>
+        </div>
+        <div style="padding:16px 20px;background:var(--bg)">
+            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">Coins Spent</div>
+            <div style="font-size:22px;font-weight:700;color:#e74c3c;margin-top:4px">-{{ number_format($summary->total_out) }}</div>
+        </div>
+    </div>
+    @endif
+
+    {{-- Transactions Table --}}
+    @if($coinHistory->isEmpty())
+        <div style="padding:40px;text-align:center;color:var(--text3)">
+            No transactions found for this date range.
+        </div>
+    @else
+    <div style="overflow-x:auto">
+        <table class="admin-table">
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Amount</th>
+                    <th>Balance After</th>
+                    <th>Reference</th>
+                    <th>Date & Time</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach($coinHistory as $tx)
+                <tr>
+                    <td>
+                        <span style="display:inline-flex;align-items:center;gap:6px">
+                            @php
+                                $icon = match(true) {
+                                    str_contains($tx->type, 'gift')       => '🎁',
+                                    str_contains($tx->type, 'game')       => '🎮',
+                                    str_contains($tx->type, 'purchase')   => '💳',
+                                    str_contains($tx->type, 'admin')      => '⚙️',
+                                    str_contains($tx->type, 'reward')     => '🏆',
+                                    str_contains($tx->type, 'refund')     => '↩️',
+                                    default                                => '🪙',
+                                };
+                            @endphp
+                            {{ $icon }}
+                            {{ ucwords(str_replace('_', ' ', $tx->type)) }}
+                        </span>
+                    </td>
+                    <td>
+                        <span style="font-weight:600;color:{{ $tx->amount >= 0 ? '#27ae60' : '#e74c3c' }}">
+                            {{ $tx->amount >= 0 ? '+' : '' }}{{ number_format($tx->amount) }}
+                        </span>
+                    </td>
+                    <td style="color:var(--text3)">{{ number_format($tx->balance_after) }}</td>
+                    <td style="font-size:12px;color:var(--text3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                        title="{{ $tx->reference }}">
+                        {{ Str::limit($tx->reference ?? '—', 40) }}
+                    </td>
+                    <td style="color:var(--text3);white-space:nowrap;font-size:13px">
+                        {{ $tx->created_at->format('M d, Y') }}<br>
+                        <span style="font-size:11px">{{ $tx->created_at->format('h:i A') }}</span>
+                    </td>
+                </tr>
+                @endforeach
+            </tbody>
+        </table>
+    </div>
+
+    {{-- Pagination --}}
+    @if($coinHistory->hasPages())
+    <div style="padding:16px 20px;border-top:1px solid var(--border)">
+        {{ $coinHistory->links() }}
+    </div>
+    @endif
+    @endif
+</div>
     </div>
 </div>
 

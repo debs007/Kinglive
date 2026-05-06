@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\BaishunGameController;
 use App\Http\Controllers\Api\DirectMessageController;
 use App\Http\Controllers\Api\ReelController;
 use App\Http\Controllers\Api\AppConfigController;
+use App\Http\Controllers\Api\CoinSellerApiController;
 use App\Http\Controllers\Api\AppVersionController;
 //use App\Http\Controllers\Api\DirectMessage;
 /*
@@ -41,7 +42,8 @@ Route::prefix('v1')->group(function () {
     Route::get('banners',       [BannerController::class, 'apiIndex']);
     Route::get('leaderboard',  [LeaderboardController::class, 'index']);
     Route::get('app/version', [AppVersionController::class, 'check']);
-    Route::get('app/config',  [AppConfigController::class,  'config']);
+    Route::get('app/config',        [AppConfigController::class,    'config']);
+    Route::get('coin-sellers/public', [CoinSellerApiController::class, 'index']);
     
     //Baishun
     Route::post('get_user_info',  [BaishunGameController::class, 'getUserInfo']);
