@@ -33,7 +33,6 @@ Route::prefix('coin-seller')->name('coin_seller.')->group(function () {
         Route::get ('users',                      [CoinSellerPortalController::class, 'users'])->name('users');
         Route::post('users/{id}/add-coins',       [CoinSellerPortalController::class, 'addCoins'])->name('users.add_coins');
         Route::get ('transactions',               [CoinSellerPortalController::class, 'transactions'])->name('transactions');
-        Route::post('update-profile',             [CoinSellerPortalController::class, 'updateProfile'])->name('update_profile');
     });
 });
 
@@ -134,6 +133,7 @@ Route::prefix('admin')->name('admin.')->group(function () {
         Route::put   ('agencies/{id}',              [AgencyController::class, 'update'])->name('agencies.update');
         Route::post  ('agencies/{id}/regenerate',   [AgencyController::class, 'regenerateCode'])->name('agencies.regenerate');
         Route::delete('agencies/{id}',              [AgencyController::class, 'destroy'])->name('agencies.destroy');
+        Route::get   ('agencies/{id}/salary-sheet', [AgencyController::class, 'salarySheet'])->name('agencies.salary_sheet');
 
         // Settings
         Route::get ('settings',            [SettingsController::class, 'index'])->name('settings.index');

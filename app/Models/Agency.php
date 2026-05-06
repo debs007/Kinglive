@@ -8,13 +8,21 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Agency extends Model
 {
-    protected $fillable = ['name', 'code', 'email', 'password', 'logo_url', 'description', 'is_active', 'owner_id', 'session_token'];
+    protected $fillable = [
+        'name', 'code', 'email', 'password',
+        'logo_url', 'description', 'is_active',
+        'owner_id', 'session_token',
+        'commission_pct',  // percentage of total diamonds as commission
+    ];
 
     protected $hidden = ['password'];
 
     protected function casts(): array
     {
-        return ['is_active' => 'boolean'];
+        return [
+            'is_active'      => 'boolean',
+            'commission_pct' => 'decimal:2',
+        ];
     }
 
     public function owner(): BelongsTo
@@ -32,14 +40,14 @@ class Agency extends Model
         return $this->members()->count();
     }
 
-    public function joinRequests(): \Illuminate\Database\Eloquent\Relations\HasMany
+    public function joinRequests(): HasMany
     {
-        return $this->hasMany(\App\Models\AgencyJoinRequest::class);
+        return $this->hasMany(AgencyJoinRequest::class);
     }
 
-    public function pendingRequests(): \Illuminate\Database\Eloquent\Relations\HasMany
+    public function pendingRequests(): HasMany
     {
-        return $this->hasMany(\App\Models\AgencyJoinRequest::class)
+        return $this->hasMany(AgencyJoinRequest::class)
                     ->where('status', 'pending');
     }
 }

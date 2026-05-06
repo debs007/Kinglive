@@ -118,6 +118,12 @@ class WebSocketHandler
                 'call.kick'           => static::handleCallKick($server, $fd, $conn, $data),
                 'ping'                => static::handlePing($server, $fd, $conn),
                 'room.bg_change'      => static::handleBgChange($server, $fd, $conn, $data),
+                'seat.emoji'          => static::handleSeatEmoji($server, $fd, $conn, $data),
+                'screen.share'        => static::handleScreenShare($server, $fd, $conn, $data),
+                'video.play'          => static::handleVideoEvent($server, $fd, $conn, $data),
+                'video.pause'         => static::handleVideoEvent($server, $fd, $conn, $data),
+                'video.seek'          => static::handleVideoEvent($server, $fd, $conn, $data),
+                'video.stop'          => static::handleVideoEvent($server, $fd, $conn, $data),
                 default               => null,
             };
         } catch (\Throwable $e) {
@@ -253,6 +259,10 @@ class WebSocketHandler
             }
         }
 
+        // Include screen share state for late joiners
+        $screenShareRaw = Redis::get("room:{$roomId}:screen_share");
+        $screenShare    = $screenShareRaw ? json_decode($screenShareRaw, true) : null;
+
         $server->push($fd, json_encode([
             'type'              => 'room.state',
             'viewer_count'      => (int) Redis::get("room:{$roomId}:viewers"),
@@ -260,6 +270,7 @@ class WebSocketHandler
             'seats'             => $seatsObj,
             'call_participants' => $callParticipants,
             'current_bg_url'    => $currentBgUrl,
+            'screen_share'      => $screenShare,
         ]));
 
         $pkSessionId = Redis::get("pk:room:{$roomId}");
@@ -1092,6 +1103,103 @@ class WebSocketHandler
         $room->update(['current_bg_url' => $bgUrl]);
 
         static::broadcastToRoom($server, $roomId, ['type' => 'room.bg_change', 'bg_url' => $bgUrl]);
+    }
+
+    // ── Seat Emoji ───────────────────────────────────────────────────────────────
+
+    private static function handleSeatEmoji(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId     = $conn['room_id'];
+        $emojiIndex = isset($data['emoji_index']) ? (int) $data['emoji_index'] : -1;
+        if (! $roomId || $emojiIndex < 0) return;
+
+        $seatIndex = -1;
+        $room      = \App\Models\Room::find($roomId);
+        if ($room?->host_user_id !== $conn['user_id']) {
+            $seats = Redis::hgetall("room:{$roomId}:seats") ?: [];
+            foreach ($seats as $idx => $seatJson) {
+                $seat = json_decode($seatJson, true);
+                if (($seat['user_id'] ?? null) == $conn['user_id']) {
+                    $seatIndex = (int) $idx;
+                    break;
+                }
+            }
+            if ($seatIndex === -1) return;
+        }
+
+        static::broadcastToRoom($server, $roomId, [
+            'type'        => 'seat.emoji',
+            'seat_index'  => $seatIndex,
+            'emoji_index' => $emojiIndex,
+            'user_id'     => $conn['user_id'],
+        ], exclude: $fd);
+    }
+
+    // ── Screen Share ─────────────────────────────────────────────────────────────
+
+    private static function handleScreenShare(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId = $conn['room_id'];
+        if (! $roomId) return;
+
+        $room = \App\Models\Room::find($roomId);
+        if ($room?->host_user_id !== $conn['user_id']) return;
+
+        $sharing    = (bool) ($data['sharing']     ?? false);
+        $youtubeUrl = $data['youtube_url'] ?? null;
+
+        if ($sharing) {
+            Redis::setex("room:{$roomId}:screen_share", 86400, json_encode([
+                'sharing'     => true,
+                'youtube_url' => $youtubeUrl,
+            ]));
+        } else {
+            Redis::del("room:{$roomId}:screen_share");
+        }
+
+        static::broadcastToRoom($server, $roomId, [
+            'type'        => 'screen.share',
+            'sharing'     => $sharing,
+            'youtube_url' => $youtubeUrl,
+        ], exclude: $fd);
+    }
+
+    // ── Party Video Events ───────────────────────────────────────────────────────
+
+    private static function handleVideoEvent(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId = $conn['room_id'];
+        if (! $roomId) return;
+
+        // Only host can control video
+        $room = \App\Models\Room::find($roomId);
+        if ($room?->host_user_id !== $conn['user_id']) return;
+
+        $type      = $data['type'];      // video.play / video.pause / video.seek / video.stop
+        $videoUrl  = $data['video_url']  ?? null;
+        $position  = (float) ($data['position']  ?? 0);  // seconds
+        $timestamp = time(); // server timestamp for sync
+
+        // Store state in Redis for late joiners
+        if ($type === 'video.stop') {
+            Redis::del("room:{$roomId}:video_state");
+        } else {
+            Redis::setex("room:{$roomId}:video_state", 86400, json_encode([
+                'type'       => $type,
+                'video_url'  => $videoUrl,
+                'position'   => $position,
+                'timestamp'  => $timestamp, // when this position was recorded
+                'is_playing' => $type === 'video.play',
+            ]));
+        }
+
+        // Broadcast to ALL including host (host needs to update state too)
+        static::broadcastToRoom($server, $roomId, [
+            'type'      => $type,
+            'video_url' => $videoUrl,
+            'position'  => $position,
+            'timestamp' => $timestamp,
+        ]);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

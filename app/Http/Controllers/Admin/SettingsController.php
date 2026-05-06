@@ -29,6 +29,9 @@ class SettingsController extends Controller
             'app_maintenance_mode', 'app_maintenance_message',
             // Agora credentials
             'agora_app_id', 'agora_app_certificate',
+            // Salary sheet settings
+            'salary_taka_rate_high', 'salary_taka_rate_low',
+            'salary_diamond_target', 'salary_video_days_target',
         ];
 
         foreach ($request->only($allowed) as $key => $value) {

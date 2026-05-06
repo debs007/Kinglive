@@ -227,6 +227,66 @@
     </div>
 </div>
 
+{{-- Add this section to resources/views/admin/settings/index.blade.php --}}
+{{-- Place it after the Agora credentials section --}}
+
+<div class="card" style="margin-bottom:24px">
+    <div class="card-header" style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:20px">💰</span>
+        <h3 style="margin:0">Agency Salary Settings</h3>
+    </div>
+    <div style="padding:20px">
+        <p style="color:var(--text3);font-size:13px;margin-bottom:20px">
+            Configure salary rates and targets for agency host salary sheets.
+            Hosts must meet BOTH diamond and video days targets to get the high rate.
+        </p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div class="form-group">
+                <label>High Rate (BDT per 100K diamonds)</label>
+                <input type="number"
+                       name="salary_taka_rate_high"
+                       value="{{ \App\Models\Setting::get('salary_taka_rate_high', 900) }}"
+                       min="0" step="0.01">
+                <small style="color:var(--text3)">Paid when both targets are met</small>
+            </div>
+            <div class="form-group">
+                <label>Low Rate (BDT per 100K diamonds)</label>
+                <input type="number"
+                       name="salary_taka_rate_low"
+                       value="{{ \App\Models\Setting::get('salary_taka_rate_low', 450) }}"
+                       min="0" step="0.01">
+                <small style="color:var(--text3)">Paid when targets are NOT met</small>
+            </div>
+            <div class="form-group">
+                <label>Diamond Target (per month)</label>
+                <input type="number"
+                       name="salary_diamond_target"
+                       value="{{ \App\Models\Setting::get('salary_diamond_target', 300000) }}"
+                       min="0" step="1000">
+                <small style="color:var(--text3)">Minimum diamonds required for high rate</small>
+            </div>
+            <div class="form-group">
+                <label>Video Days Target (per month)</label>
+                <input type="number"
+                       name="salary_video_days_target"
+                       value="{{ \App\Models\Setting::get('salary_video_days_target', 18) }}"
+                       min="0" max="31">
+                <small style="color:var(--text3)">Minimum live days required for high rate</small>
+            </div>
+        </div>
+
+        {{-- Current config summary --}}
+        <div style="margin-top:16px;padding:12px 16px;background:var(--bg3);border-radius:8px;font-size:12px;color:var(--text3)">
+            <strong style="color:var(--text)">Current logic:</strong>
+            If diamonds ≥ {{ number_format(\App\Models\Setting::get('salary_diamond_target', 300000)) }}
+            AND live days ≥ {{ \App\Models\Setting::get('salary_video_days_target', 18) }} →
+            <span style="color:#27ae60">৳{{ \App\Models\Setting::get('salary_taka_rate_high', 900) }} per 100K</span>
+            &nbsp;|&nbsp; Otherwise →
+            <span style="color:#e74c3c">৳{{ \App\Models\Setting::get('salary_taka_rate_low', 450) }} per 100K</span>
+        </div>
+    </div>
+</div>
+
 
     <div style="text-align:right;margin-top:4px">
         <button type="submit" class="btn-primary" style="padding:12px 36px;font-size:15px">

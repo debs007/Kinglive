@@ -90,6 +90,42 @@
             </form>
           </div>
         </td>
+        <td>
+            {{-- Salary Sheet Download Button (add inside agency row actions) --}}
+<div style="margin-top:8px">
+    <form method="GET"
+          action="{{ route('admin.agencies.salary_sheet', $agency->id) }}"
+          style="display:inline-flex;gap:8px;align-items:center">
+        <select name="month" style="padding:4px 8px;border-radius:6px;
+                background:var(--bg2);border:1px solid var(--border);
+                color:var(--text);font-size:12px">
+            @foreach(range(1,12) as $m)
+                <option value="{{ $m }}"
+                    {{ $m == now()->subMonth()->month ? 'selected' : '' }}>
+                    {{ \Carbon\Carbon::create()->month($m)->format('F') }}
+                </option>
+            @endforeach
+        </select>
+        <select name="year" style="padding:4px 8px;border-radius:6px;
+                background:var(--bg2);border:1px solid var(--border);
+                color:var(--text);font-size:12px">
+            @foreach(range(now()->year, now()->year - 2) as $y)
+                <option value="{{ $y }}"
+                    {{ $y == now()->subMonth()->year ? 'selected' : '' }}>
+                    {{ $y }}
+                </option>
+            @endforeach
+        </select>
+        <button type="submit"
+                style="padding:5px 14px;border-radius:6px;
+                       background:var(--accent);color:#fff;
+                       border:none;cursor:pointer;font-size:12px;
+                       display:inline-flex;align-items:center;gap:5px">
+            📥 Salary Sheet
+        </button>
+    </form>
+</div>
+        </td>
       </tr>
       @empty
       <tr>
@@ -179,6 +215,18 @@
         <label>Description</label>
         <textarea id="editDesc" name="description" rows="2"></textarea>
       </div>
+      {{-- Commission % field --}}
+        <div class="form-group">
+            <label>Commission Percentage (%)</label>
+            <input type="number"
+                   name="commission_pct"
+                   value="{{ $agency->commission_pct ?? 20 }}"
+                   min="0" max="100" step="0.01"
+                   placeholder="20">
+            <small style="color:var(--text3)">
+                % of total diamond amount paid as agency commission. Default: 20%
+            </small>
+        </div>
       <div class="form-group" style="margin:0">
         <label>Logo URL</label>
         <input type="url" id="editLogo" name="logo_url">

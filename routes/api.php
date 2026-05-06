@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\DirectMessageController;
 use App\Http\Controllers\Api\ReelController;
 use App\Http\Controllers\Api\AppConfigController;
 use App\Http\Controllers\Api\CoinSellerApiController;
+use App\Http\Controllers\Api\PartyVideoController;
 use App\Http\Controllers\Api\AppVersionController;
 //use App\Http\Controllers\Api\DirectMessage;
 /*
@@ -44,6 +45,8 @@ Route::prefix('v1')->group(function () {
     Route::get('app/version', [AppVersionController::class, 'check']);
     Route::get('app/config',        [AppConfigController::class,    'config']);
     Route::get('coin-sellers/public', [CoinSellerApiController::class, 'index']);
+
+
     
     //Baishun
     Route::post('get_user_info',  [BaishunGameController::class, 'getUserInfo']);
@@ -58,6 +61,15 @@ Route::prefix('v1')->group(function () {
         // Auth
         Route::post  ('auth/logout',        [AuthController::class, 'logout']);
         Route::get   ('auth/me',            [AuthController::class, 'me']);
+
+        // Party Videos (authenticated)
+        Route::prefix('party-videos')->group(function () {
+            Route::get   ('/',             [PartyVideoController::class, 'myVideos']);
+            Route::post  ('/upload-url',   [PartyVideoController::class, 'uploadUrl']);
+            Route::post  ('/',             [PartyVideoController::class, 'store']);
+            Route::post  ('/record-play',  [PartyVideoController::class, 'recordPlay']);
+            Route::delete('/{id}',         [PartyVideoController::class, 'destroy']);
+        });
         Route::put   ('auth/profile',       [AuthController::class, 'updateProfile']);
         Route::post  ('auth/device-token',  [AuthController::class, 'updateDeviceToken']);
 
