@@ -259,9 +259,19 @@ class WebSocketHandler
             }
         }
 
-        // Include screen share state for late joiners
+        // Include screen share + video state for late joiners
         $screenShareRaw = Redis::get("room:{$roomId}:screen_share");
         $screenShare    = $screenShareRaw ? json_decode($screenShareRaw, true) : null;
+
+        $videoStateRaw  = Redis::get("room:{$roomId}:video_state");
+        $videoState     = $videoStateRaw  ? json_decode($videoStateRaw,  true) : null;
+
+        // If video is playing, update the position with time elapsed since last sync
+        if ($videoState && ($videoState['is_playing'] ?? false)) {
+            $elapsed             = time() - ($videoState['timestamp'] ?? time());
+            $videoState['position'] = ($videoState['position'] ?? 0) + $elapsed;
+            $videoState['timestamp'] = time(); // reset timestamp to now
+        }
 
         $server->push($fd, json_encode([
             'type'              => 'room.state',
@@ -271,6 +281,7 @@ class WebSocketHandler
             'call_participants' => $callParticipants,
             'current_bg_url'    => $currentBgUrl,
             'screen_share'      => $screenShare,
+            'video_state'       => $videoState,
         ]));
 
         $pkSessionId = Redis::get("pk:room:{$roomId}");
