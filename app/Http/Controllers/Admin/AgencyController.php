@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Agency;
+use App\Models\GiftTransaction;
 use App\Models\Room;
 use App\Models\Setting;
 use App\Models\User;
@@ -102,9 +103,21 @@ class AgencyController extends Controller
         // ── Fetch hosts in this agency ────────────────────────────────────────
         $hosts = User::where('agency_id', $agency->id)
             ->where('role', 'user')
-            ->select('id', 'username', 'display_name', 'diamond_balance')
-            ->orderBy('diamond_balance', 'desc')
+            ->select('id', 'username', 'display_name')
             ->get();
+
+        // ── Monthly diamond earnings from gift transactions ──────────────────
+        $monthlyDiamonds = GiftTransaction::whereBetween('created_at', [$periodStart, $periodEnd])
+            ->whereIn('receiver_id', $hosts->pluck('id'))
+            ->selectRaw('receiver_id, SUM(diamond_total) AS diamonds_earned')
+            ->groupBy('receiver_id')
+            ->get()
+            ->keyBy('receiver_id');
+
+        // Sort hosts by diamonds earned desc
+        $hosts = $hosts->sortByDesc(fn ($h) =>
+            $monthlyDiamonds->get($h->id)?->diamonds_earned ?? 0
+        )->values();
 
         // ── Pre-fetch monthly live stats from rooms table ────────────────────
         // Rules:
@@ -177,7 +190,7 @@ class AgencyController extends Controller
             $stats    = $roomStats->get($host->id) ?? null;
             $liveDays = $stats ? (int) $stats->live_days   : 0;
             $liveHrs  = $stats ? (float) $stats->live_hours : 0;
-            $diamonds = (int) $host->diamond_balance;
+            $diamonds = (int) ($monthlyDiamonds->get($host->id)?->diamonds_earned ?? 0);
 
             // Determine rate: high only if BOTH targets met
             $meetsTarget = ($diamonds >= $diamondTarget) && ($liveDays >= $videoDaysTarget);
