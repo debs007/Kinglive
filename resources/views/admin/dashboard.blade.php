@@ -4,6 +4,46 @@
 
 @section('content')
 
+{{--
+  Add this button somewhere in your admin users panel or dashboard.
+  It syncs all historical gift data into total_coins_sent and level fields.
+  Run once after deploying this feature. Safe to run again.
+--}}
+
+<div class="card" style="margin-bottom:24px;padding:20px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div>
+            <h3 style="margin:0;font-size:15px">🎮 Sync User Gift Levels</h3>
+            <p style="margin:4px 0 0;color:var(--text3);font-size:12px">
+                Run once after deploying the gift level feature to calculate levels from all historical gifts.
+                Safe to run again at any time.
+            </p>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:10px">
+            {{-- Stats --}}
+            <a href="{{ route('admin.users.level_stats') }}"
+               style="padding:8px 16px;border-radius:8px;background:var(--bg2);
+                      border:1px solid var(--border);color:var(--text);
+                      font-size:13px;text-decoration:none">
+                📊 View Level Stats
+            </a>
+
+            {{-- Sync button --}}
+            <form method="POST" action="{{ route('admin.users.sync_levels') }}"
+                  onsubmit="return confirm('Sync all user levels from gift history? This may take a minute.')">
+                @csrf
+                <button type="submit"
+                        style="padding:8px 20px;border-radius:8px;
+                               background:var(--accent);color:#fff;
+                               border:none;cursor:pointer;font-size:13px;
+                               font-weight:600">
+                    🔄 Sync All User Levels
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
 <div class="stats-grid">
     <div class="stat-card purple">
         <div class="label">Total Users</div>

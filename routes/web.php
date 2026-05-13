@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Admin\AgencyController;
+use App\Http\Controllers\Admin\SyncUserLevelsController;
 use App\Http\Controllers\Admin\BackgroundController;
 use App\Http\Controllers\Admin\BannerController;
 use App\Http\Controllers\Agency\AgencyPortalController;
@@ -33,7 +34,6 @@ Route::prefix('coin-seller')->name('coin_seller.')->group(function () {
         Route::get ('users',                      [CoinSellerPortalController::class, 'users'])->name('users');
         Route::post('users/{id}/add-coins',       [CoinSellerPortalController::class, 'addCoins'])->name('users.add_coins');
         Route::get ('transactions',               [CoinSellerPortalController::class, 'transactions'])->name('transactions');
-        Route::post('update-profile', [CoinSellerPortalController::class, 'updateProfile'])->name('update_profile');
     });
 });
 
@@ -70,6 +70,10 @@ Route::prefix('admin')->name('admin.')->group(function () {
 
         // Users
         Route::get ('users',               [UserController::class, 'index'])->name('users.index');
+        // Level sync — must be BEFORE users/{id} to avoid wildcard match
+        Route::post('users/sync-levels', [SyncUserLevelsController::class, 'sync'])->name('users.sync_levels');
+        Route::get ('users/level-stats', [SyncUserLevelsController::class, 'stats'])->name('users.level_stats');
+
         Route::get ('users/{id}',          [UserController::class, 'show'])->name('users.show');
         Route::put ('users/{id}/role',     [UserController::class, 'updateRole'])->name('users.role');
         Route::post('users/{id}/coins',    [UserController::class, 'adjustCoins'])->name('users.coins');
@@ -135,6 +139,8 @@ Route::prefix('admin')->name('admin.')->group(function () {
         Route::post  ('agencies/{id}/regenerate',   [AgencyController::class, 'regenerateCode'])->name('agencies.regenerate');
         Route::delete('agencies/{id}',              [AgencyController::class, 'destroy'])->name('agencies.destroy');
         Route::get   ('agencies/{id}/salary-sheet', [AgencyController::class, 'salarySheet'])->name('agencies.salary_sheet');
+
+
 
         // Settings
         Route::get ('settings',            [SettingsController::class, 'index'])->name('settings.index');

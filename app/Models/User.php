@@ -19,7 +19,7 @@ class User extends Authenticatable implements JWTSubject
         'username', 'email', 'phone', 'password',
         'avatar_url', 'cover_url', 'frame_url', 'display_name', 'bio',
         'country_code', 'role',
-        'coin_balance', 'diamond_balance',
+        'coin_balance', 'diamond_balance', 'total_coins_sent', 'level',
         'level', 'xp',
         'is_verified', 'is_active',
         'total_streams', 'total_diamonds_earned',

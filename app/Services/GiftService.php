@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\CoinTransaction;
 use App\Models\Gift;
 use App\Models\GiftTransaction;
+use App\Services\LevelService;
 use App\Models\Room;
 use App\Models\User;
 use Carbon\Carbon;
@@ -60,13 +61,19 @@ class GiftService
                 'diamond_total' => $totalDiamonds,
             ]);
 
-            Room::where('id', $roomId)->increment('total_gifts_received', $totalCoins);
+                Room::where('id', $roomId)->increment('total_gifts_received', $totalCoins);
         });
+
+        // Update sender level AFTER transaction (non-blocking)
+        $sender->refresh();
+        $newLevel = LevelService::updateUserLevel($sender, $totalCoins);
 
         return [
             'success'        => true,
             'coins_deducted' => $totalCoins,
             'new_balance'    => $sender->fresh()->coin_balance,
+            'new_level'      => $newLevel, // null if no level up
+            'current_level'  => $sender->fresh()->level,
         ];
     }
 

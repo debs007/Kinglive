@@ -120,6 +120,7 @@ class WebSocketHandler
                 'room.bg_change'      => static::handleBgChange($server, $fd, $conn, $data),
                 'seat.emoji'          => static::handleSeatEmoji($server, $fd, $conn, $data),
                 'screen.share'        => static::handleScreenShare($server, $fd, $conn, $data),
+                'pk.random_toggle'    => static::handleRandomPkToggle($server, $fd, $conn, $data),
                 'video.play'          => static::handleVideoEvent($server, $fd, $conn, $data),
                 'video.pause'         => static::handleVideoEvent($server, $fd, $conn, $data),
                 'video.seek'          => static::handleVideoEvent($server, $fd, $conn, $data),
@@ -289,17 +290,38 @@ class WebSocketHandler
             $pkRaw = Redis::get("pk:session:{$pkSessionId}");
             if ($pkRaw) {
                 $pkSession = json_decode($pkRaw, true);
+                $agoraService   = app(\App\Services\AgoraService::class);
+                $challengerRoom = $pkSession['challenger_room'] ?? null;
+                $targetRoom     = $pkSession['target_room']     ?? null;
+                $isInChallengerRoom = $roomId === $challengerRoom;
+                $opponentRoomId = $isInChallengerRoom ? $targetRoom : $challengerRoom;
+                $opponentUid    = $isInChallengerRoom
+                    ? ($pkSession['target_uid']     ?? 0)
+                    : ($pkSession['challenger_uid'] ?? 0);
+                $opponentToken  = $opponentRoomId
+                    ? $agoraService->generateToken($opponentRoomId, $conn['user_id'], 'audience')
+                    : '';
+
                 $server->push($fd, json_encode([
-                    'type'            => 'pk.running',
-                    'pk_session_id'   => $pkSessionId,
-                    'challenger_room' => $pkSession['challenger_room'],
-                    'target_room'     => $pkSession['target_room'],
-                    'scores'          => $pkSession['scores'],
-                    'started_at'      => $pkSession['started_at'],
-                    'duration'        => $pkSession['duration'],
-                    'pk_channel_id'   => $pkSession['pk_channel_id'] ?? null,
-                    'challenger_uid'  => $pkSession['challenger_uid'] ?? null,
-                    'target_uid'      => $pkSession['target_uid'] ?? null,
+                    'type'                 => 'pk.running',
+                    'pk_session_id'        => $pkSessionId,
+                    'challenger_room'      => $challengerRoom,
+                    'target_room'          => $targetRoom,
+                    'scores'               => $pkSession['scores'],
+                    'started_at'           => $pkSession['started_at'],
+                    'duration'             => $pkSession['duration'],
+                    'pk_channel_id'        => null,
+                    'challenger_uid'       => $pkSession['challenger_uid'] ?? null,
+                    'target_uid'           => $pkSession['target_uid'] ?? null,
+                    'challenger_name'      => $pkSession['challenger_name'] ?? '',
+                    'target_name'          => $pkSession['target_name'] ?? '',
+                    'challenger_avatar'    => $pkSession['challenger_avatar'] ?? '',
+                    'target_avatar'        => $pkSession['target_avatar'] ?? '',
+                    'challenger_agora_uid' => $pkSession['challenger_uid'] ?? null,
+                    'target_agora_uid'     => $pkSession['target_uid'] ?? null,
+                    'opponent_channel_id'  => $opponentRoomId,
+                    'opponent_token'       => $opponentToken,
+                    'opponent_uid'         => $opponentUid,
                 ]));
             }
         }
@@ -642,16 +664,48 @@ class WebSocketHandler
             return;
         }
 
-        \App\Jobs\ProcessGiftJob::dispatch(
-            senderId:   $conn['user_id'],
-            receiverId: $targetUserId,
-            giftId:     $giftId,
-            roomId:     $roomId,
-            quantity:   $quantity,
+        // Process gift synchronously to get level update immediately
+        $giftService = app(\App\Services\GiftService::class);
+        $sender      = \App\Models\User::find($conn['user_id']);
+        $result      = $giftService->sendGift(
+            sender:       $sender,
+            giftId:       $giftId,
+            roomId:       $roomId,
+            targetUserId: $targetUserId,
+            quantity:     $quantity,
         );
 
-        $newBalance = max(0, $sender->coin_balance - $coinValue);
-        $server->push($fd, json_encode(['type' => 'balance.update', 'coin_balance' => $newBalance]));
+        if (! ($result['success'] ?? false)) {
+            $server->push($fd, json_encode([
+                'type'    => 'gift.error',
+                'message' => $result['message'] ?? 'Gift failed.',
+            ]));
+            return;
+        }
+
+        // Send updated balance to sender
+        $server->push($fd, json_encode([
+            'type'         => 'balance.update',
+            'coin_balance' => $result['new_balance'],
+            'level'        => $result['current_level'],
+        ]));
+
+        // Notify sender of level up
+        if (! empty($result['new_level'])) {
+            $server->push($fd, json_encode([
+                'type'      => 'level.up',
+                'new_level' => $result['new_level'],
+                'user_id'   => $conn['user_id'],
+            ]));
+            // Broadcast to room so others see the level badge update
+            static::broadcastToRoom($server, $roomId, [
+                'type'      => 'level.up',
+                'new_level' => $result['new_level'],
+                'user_id'   => $conn['user_id'],
+            ], exclude: $fd);
+        }
+
+        // Balance update sent after gift processing below
 
         $totalDiamonds      = ($gift->diamond_value ?? 0) * $quantity;
         $room               = \App\Models\Room::find($roomId);
@@ -727,9 +781,33 @@ class WebSocketHandler
         $invite = json_decode($raw, true);
 
         if (! $accepted) {
-            $challengerFd = static::getFdByUserId($invite['challenger_uid']);
+            $challengerFd = static::getFdByUserId((int) $invite['challenger_uid']);
             if ($challengerFd && $server->isEstablished($challengerFd)) {
                 $server->push($challengerFd, json_encode(['type' => 'pk.declined', 'pk_session_id' => $pkSessionId]));
+            }
+
+            // If this was a random PK invite, move to next candidate
+            if (! empty($invite['random'])) {
+                $roomType   = $invite['room_type']     ?? 'video';
+                $challengerRoomId = $invite['challenger_room'] ?? null;
+                if ($challengerRoomId) {
+                    $myPoolKey = "pk:random:{$roomType}:{$challengerRoomId}";
+                    $myData    = Redis::get($myPoolKey);
+                    if ($myData) {
+                        $myConn = json_decode($myData, true);
+                        static::sendNextRandomPkInvite(
+                            $server, $challengerFd ?? -1,
+                            [
+                                'room_id'  => $challengerRoomId,
+                                'user_id'  => $myConn['user_id'],
+                                'username' => $myConn['username'],
+                                'avatar'   => $myConn['avatar'],
+                            ],
+                            $challengerRoomId,
+                            $roomType
+                        );
+                    }
+                }
             }
             return;
         }
@@ -783,31 +861,58 @@ class WebSocketHandler
             'target_agora_uid'     => $targetAgoraUid,
         ];
 
+        // Each host gets a token to subscribe to the OPPONENT's channel
+        // Host stays on their own channel — no channel switching needed
+        $challengerRoom   = $invite['challenger_room'];
+        $targetRoom       = $conn['room_id'];
+
+        // Challenger subscribes to target's room channel
+        $opponentTokenForChallenger = $agoraService->generateToken(
+            $targetRoom, $challengerAgoraUid, 'audience'
+        );
+
+        // Target subscribes to challenger's room channel
+        $opponentTokenForTarget = $agoraService->generateToken(
+            $challengerRoom, $targetAgoraUid, 'audience'
+        );
+
         $challengerHostFd = static::getFdByUserId($challengerAgoraUid);
         if ($challengerHostFd && $server->isEstablished($challengerHostFd)) {
             $server->push($challengerHostFd, json_encode([
-                'type'            => 'pk.join_channel',
-                'pk_channel_id'   => $pkChannelId,
-                'agora_token'     => $challengerToken,
-                'agora_uid'       => $challengerAgoraUid,
-                'opponent_uid'    => $targetAgoraUid,
-                'opponent_name'   => $conn['username'],
-                'opponent_avatar' => $conn['avatar'] ?? '',
+                'type'                => 'pk.join_channel',
+                'opponent_channel_id' => $targetRoom,   // subscribe to opponent's room
+                'opponent_token'      => $opponentTokenForChallenger,
+                'opponent_uid'        => $targetAgoraUid,
+                'opponent_name'       => $conn['username'],
+                'opponent_avatar'     => $conn['avatar'] ?? '',
             ]));
         }
 
         $server->push($fd, json_encode([
-            'type'            => 'pk.join_channel',
-            'pk_channel_id'   => $pkChannelId,
-            'agora_token'     => $targetToken,
-            'agora_uid'       => $targetAgoraUid,
-            'opponent_uid'    => $challengerAgoraUid,
-            'opponent_name'   => $invite['challenger_name'],
-            'opponent_avatar' => $invite['challenger_avatar'] ?? '',
+            'type'                => 'pk.join_channel',
+            'opponent_channel_id' => $challengerRoom,   // subscribe to opponent's room
+            'opponent_token'      => $opponentTokenForTarget,
+            'opponent_uid'        => $challengerAgoraUid,
+            'opponent_name'       => $invite['challenger_name'],
+            'opponent_avatar'     => $invite['challenger_avatar'] ?? '',
         ]));
 
-        static::broadcastToRoom($server, $invite['challenger_room'], $broadcast);
-        static::broadcastToRoom($server, $conn['room_id'], $broadcast);
+        // For challenger room audience: opponent is target room
+        $broadcastToChallenger = array_merge($broadcast, [
+            'opponent_channel_id' => $conn['room_id'],
+            'opponent_token'      => $agoraService->generateToken($conn['room_id'], 0, 'audience'),
+            'opponent_uid'        => $targetAgoraUid,
+        ]);
+
+        // For target room audience: opponent is challenger room
+        $broadcastToTarget = array_merge($broadcast, [
+            'opponent_channel_id' => $invite['challenger_room'],
+            'opponent_token'      => $agoraService->generateToken($invite['challenger_room'], 0, 'audience'),
+            'opponent_uid'        => $challengerAgoraUid,
+        ]);
+
+        static::broadcastToRoom($server, $invite['challenger_room'], $broadcastToChallenger);
+        static::broadcastToRoom($server, $conn['room_id'], $broadcastToTarget);
 
         \App\Jobs\EndPkSessionJob::dispatch($pkSessionId)->delay(now()->addSeconds($duration));
     }
@@ -824,8 +929,8 @@ class WebSocketHandler
         Redis::setex("pk:session:{$pkSessionId}", $ttl, json_encode($session));
 
         $scoreBroadcast = ['type' => 'pk.scores', 'pk_session_id' => $pkSessionId, 'scores' => $session['scores']];
-        static::broadcastToRoom($server, $session['challenger_room'], $scoreBroadcast);
-        static::broadcastToRoom($server, $session['target_room'], $scoreBroadcast);
+        static::broadcastToRoom($server, $session['challenger_room'], $scoreBroadcast, crossBroadcast: false);
+        static::broadcastToRoom($server, $session['target_room'], $scoreBroadcast, crossBroadcast: false);
     }
 
     // ── Game Events ───────────────────────────────────────────────────────────
@@ -1146,6 +1251,113 @@ class WebSocketHandler
         ], exclude: $fd);
     }
 
+    // ── Random PK Matchmaking ────────────────────────────────────────────────────
+
+    private static function handleRandomPkToggle(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId   = $conn['room_id'];
+        $enabled  = (bool) ($data['enabled']   ?? false);
+        $roomType = $data['room_type'] ?? 'video';
+        if (! $roomId) return;
+
+        $room = \App\Models\Room::find($roomId);
+        if ($room?->host_user_id !== $conn['user_id']) return;
+
+        if (! $enabled) {
+            // Host disabled — remove from pool and clear any pending state
+            Redis::del("pk:random:{$roomType}:{$roomId}");
+            Redis::del("pk:random:pending:{$roomId}");
+            return;
+        }
+
+        // Register in pool
+        Redis::setex("pk:random:{$roomType}:{$roomId}", 300, json_encode([
+            'room_id'   => $roomId,
+            'user_id'   => $conn['user_id'],
+            'username'  => $conn['username'],
+            'avatar'    => $conn['avatar'],
+        ]));
+
+        // Try to send invite to next available host
+        static::sendNextRandomPkInvite($server, $fd, $conn, $roomId, $roomType);
+    }
+
+    /**
+     * Send a random PK invite to the next available host in the pool.
+     * Called on toggle-on AND after a rejection to try the next candidate.
+     */
+    private static function sendNextRandomPkInvite(
+        Server $server,
+        int    $fd,
+        array  $conn,
+        string $roomId,
+        string $roomType
+    ): void {
+        $keys = Redis::keys("pk:random:{$roomType}:*");
+        if (empty($keys)) return;
+
+        // Track already-tried rooms to skip them
+        $triedKey  = "pk:random:tried:{$roomId}";
+        $triedRaw  = Redis::get($triedKey);
+        $tried     = $triedRaw ? json_decode($triedRaw, true) : [];
+
+        foreach ($keys as $key) {
+            $candidate = json_decode(Redis::get($key) ?? '', true);
+            if (! $candidate) { Redis::del($key); continue; }
+            if ($candidate['room_id'] === $roomId) continue;           // skip self
+            if (in_array($candidate['room_id'], $tried)) continue;     // skip already tried
+
+            // Verify candidate is still connected
+            $candidateFd = static::getFdByUserId((int) $candidate['user_id'], $server);
+            if (! $candidateFd || ! $server->isEstablished($candidateFd)) {
+                Redis::del($key);
+                continue;
+            }
+
+            $pkSessionId = (string) \Illuminate\Support\Str::uuid();
+
+            // Mark as tried
+            $tried[] = $candidate['room_id'];
+            Redis::setex($triedKey, 120, json_encode($tried));
+
+            // Store invite data
+            Redis::setex("pk:invite:{$pkSessionId}", 15, json_encode([
+                'challenger_room'   => $roomId,
+                'challenger_uid'    => $conn['user_id'],
+                'challenger_name'   => $conn['username'],
+                'challenger_avatar' => $conn['avatar'],
+                'target_room'       => $candidate['room_id'],
+                'random'            => true,
+                'room_type'         => $roomType,
+            ]));
+
+            // Send invite to the challenger (the host who enabled random PK)
+            $server->push($fd, json_encode([
+                'type'               => 'pk.random_invite',
+                'pk_session_id'      => $pkSessionId,
+                'challenger_room_id' => $candidate['room_id'],
+                'challenger_name'    => $candidate['username'],
+                'challenger_avatar'  => $candidate['avatar'],
+                'auto_reject_secs'   => 5,
+            ]));
+
+            // Also send invite to the candidate
+            $server->push($candidateFd, json_encode([
+                'type'               => 'pk.random_invite',
+                'pk_session_id'      => $pkSessionId,
+                'challenger_room_id' => $roomId,
+                'challenger_name'    => $conn['username'],
+                'challenger_avatar'  => $conn['avatar'],
+                'auto_reject_secs'   => 5,
+            ]));
+
+            return; // Wait for response before trying next
+        }
+
+        // Exhausted all candidates — clear tried list, stay in pool
+        Redis::del($triedKey);
+    }
+
     // ── Screen Share ─────────────────────────────────────────────────────────────
 
     private static function handleScreenShare(Server $server, int $fd, array $conn, array $data): void
@@ -1215,8 +1427,13 @@ class WebSocketHandler
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private static function broadcastToRoom(Server $server, string $roomId, array $payload, int $exclude = -1): void
-    {
+    private static function broadcastToRoom(
+        Server $server,
+        string $roomId,
+        array  $payload,
+        int    $exclude         = -1,
+        bool   $crossBroadcast  = true  // cross-broadcast to PK opponent room
+    ): void {
         $fds  = Redis::smembers("room:{$roomId}:fds");
         $json = json_encode($payload);
 
@@ -1229,6 +1446,40 @@ class WebSocketHandler
                 Redis::srem("room:{$roomId}:fds", $fd);
             }
         }
+
+        // During PK — also broadcast to the opponent room (opt-out for PK system events)
+        // so audiences of both rooms share unified chat, gifts, animations
+        if ($crossBroadcast) { $pkSessionId = Redis::get("pk:room:{$roomId}");
+        if ($pkSessionId) {
+            $pkRaw = Redis::get("pk:session:{$pkSessionId}");
+            if ($pkRaw) {
+                $pkSession    = json_decode($pkRaw, true);
+                $challengerRoom = $pkSession['challenger_room'] ?? null;
+                $targetRoom     = $pkSession['target_room']     ?? null;
+
+                // Find the opponent room
+                $opponentRoomId = null;
+                if ($challengerRoom && $challengerRoom !== $roomId) {
+                    $opponentRoomId = $challengerRoom;
+                } elseif ($targetRoom && $targetRoom !== $roomId) {
+                    $opponentRoomId = $targetRoom;
+                }
+
+                if ($opponentRoomId) {
+                    $opponentFds = Redis::smembers("room:{$opponentRoomId}:fds");
+                    foreach ($opponentFds as $ofd) {
+                        $ofd = (int) $ofd;
+                        if ($ofd === $exclude) continue;
+                        if ($server->isEstablished($ofd)) {
+                            $server->push($ofd, $json);
+                        } else {
+                            Redis::srem("room:{$opponentRoomId}:fds", $ofd);
+                        }
+                    }
+                }
+            }
+        }
+        } // end crossBroadcast
     }
 
     private static function getHostFd(string $roomId, ?Server $server = null): ?int
