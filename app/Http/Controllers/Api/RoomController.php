@@ -137,6 +137,7 @@ class RoomController extends Controller
             'current_user_id'     => $userId,
             'current_username'    => auth()->user()->username,
             'current_user_avatar' => auth()->user()->avatar_url,
+            'current_user_level'  => auth()->user()->level ?? 1,
             'user_coin_balance'     => auth()->user()->coin_balance,
             'host_diamond_balance'  => $room->host->diamond_balance ?? 0,
         ]);

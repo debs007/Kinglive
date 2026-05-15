@@ -214,8 +214,12 @@ class WebSocketHandler
 
         $room = Room::find($roomId);
         if ($room?->host_user_id !== $conn['user_id']) {
-            Redis::incr("room:{$roomId}:viewers");
+            $newCount = Redis::incr("room:{$roomId}:viewers");
+            // Sync to DB so room list shows accurate count
+            Room::where('id', $roomId)->update(['viewer_count' => (int) $newCount]);
         }
+
+        $currentViewerCount = (int) Redis::get("room:{$roomId}:viewers");
 
         static::broadcastToRoom($server, $roomId, [
             'type'         => 'user.joined',
@@ -223,8 +227,14 @@ class WebSocketHandler
             'username'     => $conn['username'],
             'avatar'       => $conn['avatar'],
             'level'        => $conn['level'],
-            'viewer_count' => (int) Redis::get("room:{$roomId}:viewers"),
-        ], exclude: $fd);
+            'viewer_count' => $currentViewerCount,
+        ], exclude: $fd, crossBroadcast: false);
+
+        // Also send updated count to the joiner themselves
+        $server->push($fd, json_encode([
+            'type'         => 'viewer.count',
+            'viewer_count' => $currentViewerCount,
+        ]));
 
         $allSeats = Redis::hgetall("room:{$roomId}:seats") ?: [];
         foreach ($allSeats as $seatIdx => $seatJson) {
@@ -340,7 +350,11 @@ class WebSocketHandler
         $room = Room::find($roomId);
         if ($room?->host_user_id !== $conn['user_id']) {
             $remaining = (int) Redis::decr("room:{$roomId}:viewers");
-            if ($remaining < 0) Redis::set("room:{$roomId}:viewers", 0);
+            if ($remaining < 0) {
+                $remaining = 0;
+                Redis::set("room:{$roomId}:viewers", 0);
+            }
+            Room::where('id', $roomId)->update(['viewer_count' => $remaining]);
         }
 
         Redis::del("room:{$roomId}:user_pending:{$conn['user_id']}");
@@ -371,7 +385,7 @@ class WebSocketHandler
             'user_id'      => $conn['user_id'],
             'username'     => $conn['username'],
             'viewer_count' => (int) (Redis::get("room:{$roomId}:viewers") ?? 0),
-        ]);
+        ], crossBroadcast: false);
 
         $conn['room_id'] = null;
     }
