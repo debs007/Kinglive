@@ -58,7 +58,7 @@ class WebSocketHandler
             'room_id'  => null,
             'username' => $user->username,
             'avatar'   => $user->avatar_url,
-            'level'    => $user->level,
+            'level'    => (int) ($user->level ?? 1),
         ];
 
         // Clean stale fds for this user before adding new one
@@ -156,7 +156,7 @@ class WebSocketHandler
                 static::broadcastToRoom($server, $roomId, [
                     'type'    => 'room.ended',
                     'room_id' => $roomId,
-                ]);
+                ], crossBroadcast: false);  // never cross-broadcast room.ended
                 Redis::del(
                     "room:{$roomId}:fds",
                     "room:{$roomId}:viewers",
@@ -226,7 +226,7 @@ class WebSocketHandler
             'user_id'      => $conn['user_id'],
             'username'     => $conn['username'],
             'avatar'       => $conn['avatar'],
-            'level'        => $conn['level'],
+            'level'        => (int) ($conn['level'] ?? 1),
             'viewer_count' => $currentViewerCount,
         ], exclude: $fd, crossBroadcast: false);
 
@@ -409,7 +409,7 @@ class WebSocketHandler
             'user_id'  => $conn['user_id'],
             'username' => $conn['username'],
             'avatar'   => $conn['avatar'],
-            'level'    => $conn['level'],
+            'level'    => (int) ($conn['level'] ?? 1),
             'message'  => $message,
             'ts'       => time(),
         ]);
@@ -423,7 +423,7 @@ class WebSocketHandler
             'user_id'  => $conn['user_id'],
             'username' => $conn['username'],
             'avatar'   => $conn['avatar'],
-            'level'    => $conn['level'],
+            'level'    => (int) ($conn['level'] ?? 1),
             'message'  => $message,
         ], exclude: $fd);
     }
@@ -742,6 +742,7 @@ class WebSocketHandler
             'sender_id'      => $conn['user_id'],
             'sender_name'    => $conn['username'],
             'sender_avatar'  => $conn['avatar'],
+            'sender_level'   => (int) ($conn['level'] ?? 1),
             'target_user_id' => $targetUserId,
             'quantity'       => $quantity,
             'coins'          => $coinValue,
@@ -1307,55 +1308,65 @@ class WebSocketHandler
         string $roomId,
         string $roomType
     ): void {
-        $keys = Redis::keys("pk:random:{$roomType}:*");
-        if (empty($keys)) return;
-
         // Track already-tried rooms to skip them
-        $triedKey  = "pk:random:tried:{$roomId}";
-        $triedRaw  = Redis::get($triedKey);
-        $tried     = $triedRaw ? json_decode($triedRaw, true) : [];
+        $triedKey = "pk:random:tried:{$roomId}";
+        $tried    = json_decode(Redis::get($triedKey) ?? '[]', true) ?: [];
 
-        foreach ($keys as $key) {
-            $candidate = json_decode(Redis::get($key) ?? '', true);
-            if (! $candidate) { Redis::del($key); continue; }
-            if ($candidate['room_id'] === $roomId) continue;           // skip self
-            if (in_array($candidate['room_id'], $tried)) continue;     // skip already tried
+        // Map room type to DB column value
+        // Flutter sends 'video', 'audio', 'audioBoard' — DB stores 'video','audio','audio_board'
+        $dbType = match($roomType) {
+            'audioBoard' => 'audio_board',
+            default      => $roomType,
+        };
 
-            // Verify candidate is still connected
-            $candidateFd = static::getFdByUserId((int) $candidate['user_id'], $server);
-            if (! $candidateFd || ! $server->isEstablished($candidateFd)) {
-                Redis::del($key);
-                continue;
-            }
+        // Scan ALL live rooms of the same type — not just those with random PK on
+        $liveRooms = \App\Models\Room::where('status', 'live')
+            ->where('type', $dbType)
+            ->where('id', '!=', $roomId)
+            ->whereNotIn('id', $tried)
+            ->with('host:id,username,avatar_url')
+            ->get();
+
+        if ($liveRooms->isEmpty()) {
+            Redis::del($triedKey);
+            return;
+        }
+
+        foreach ($liveRooms as $room) {
+            $hostId = $room->host_user_id;
+
+            // Skip own rooms / self
+            if ($hostId == $conn['user_id']) continue;
+
+            // Skip rooms already in a PK
+            if (Redis::get("pk:room:{$room->id}")) continue;
+
+            // Verify host is connected via WebSocket
+            $candidateFd = static::getFdByUserId((int) $hostId, $server);
+            if (! $candidateFd || ! $server->isEstablished($candidateFd)) continue;
 
             $pkSessionId = (string) \Illuminate\Support\Str::uuid();
 
-            // Mark as tried
-            $tried[] = $candidate['room_id'];
-            Redis::setex($triedKey, 120, json_encode($tried));
+            // Mark as tried so we don't re-invite on next cycle
+            $tried[] = $room->id;
+            Redis::setex($triedKey, 300, json_encode($tried));
 
-            // Store invite data
-            Redis::setex("pk:invite:{$pkSessionId}", 15, json_encode([
+            $hostName   = $room->host?->username   ?? 'Host';
+            $hostAvatar = $room->host?->avatar_url  ?? '';
+
+            // Store invite so pk.response can look it up
+            Redis::setex("pk:invite:{$pkSessionId}", 30, json_encode([
                 'challenger_room'   => $roomId,
                 'challenger_uid'    => $conn['user_id'],
                 'challenger_name'   => $conn['username'],
                 'challenger_avatar' => $conn['avatar'],
-                'target_room'       => $candidate['room_id'],
+                'target_room'       => $room->id,
+                'target_uid'        => $hostId,
                 'random'            => true,
                 'room_type'         => $roomType,
             ]));
 
-            // Send invite to the challenger (the host who enabled random PK)
-            $server->push($fd, json_encode([
-                'type'               => 'pk.random_invite',
-                'pk_session_id'      => $pkSessionId,
-                'challenger_room_id' => $candidate['room_id'],
-                'challenger_name'    => $candidate['username'],
-                'challenger_avatar'  => $candidate['avatar'],
-                'auto_reject_secs'   => 5,
-            ]));
-
-            // Also send invite to the candidate
+            // Only TARGET host gets the invite popup — challenger just waits
             $server->push($candidateFd, json_encode([
                 'type'               => 'pk.random_invite',
                 'pk_session_id'      => $pkSessionId,
@@ -1365,10 +1376,18 @@ class WebSocketHandler
                 'auto_reject_secs'   => 5,
             ]));
 
-            return; // Wait for response before trying next
+            // Tell challenger we found someone and are waiting
+            $server->push($fd, json_encode([
+                'type'           => 'pk.random_searching',
+                'target_name'    => $hostName,
+                'target_avatar'  => $hostAvatar,
+                'pk_session_id'  => $pkSessionId,
+            ]));
+
+            return; // Wait for response, then try next if declined
         }
 
-        // Exhausted all candidates — clear tried list, stay in pool
+        // Exhausted all live rooms — clear tried so next toggle starts fresh
         Redis::del($triedKey);
     }
 

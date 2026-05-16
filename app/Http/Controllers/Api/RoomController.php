@@ -165,6 +165,11 @@ class RoomController extends Controller
         $remainingMins  = $durationMins % 60;
 
         // Always add live time
+        // Track today's live minutes in Redis for daily reward progress display
+        $todayMinKey = "live_minutes_today:{$host->id}:" . now()->toDateString();
+        \Illuminate\Support\Facades\Redis::incrby($todayMinKey, $durationMins);
+        \Illuminate\Support\Facades\Redis::expire($todayMinKey, 86400 * 2);
+
         $updates = [
             'total_live_minutes' => \DB::raw("total_live_minutes + {$durationMins}"),
             'total_live_hours'   => \DB::raw("total_live_hours + {$durationHours}"),
@@ -190,21 +195,34 @@ class RoomController extends Controller
         $host->update($updates);
 
         // ── Diamond reward for 40+ minute video live ──────────────────────
+        // Uses Redis SETNX (atomic set-if-not-exists) to prevent race conditions.
+        // If multiple requests race, only ONE will get SETNX = 1 (success).
+        // The others get 0 and are skipped — no double crediting.
         $diamondReward = 0;
         if ($durationMins >= 40 && $room->type === 'video') {
-            $rewardKey = "diamond_reward_given:{$host->id}:" . now()->toDateString();
-            if (! \Illuminate\Support\Facades\Redis::get($rewardKey)) {
-                \Illuminate\Support\Facades\Redis::setex($rewardKey, 86400, 1);
-                $host->increment('diamond_balance', 5000);
-                $diamondReward = 5000;
+            $today     = now()->toDateString();
+            $rewardKey = "diamond_reward_given:{$host->id}:{$today}";
 
-                \App\Models\CoinTransaction::create([
-                    'user_id'      => $host->id,
-                    'type'         => 'live_reward',
-                    'amount'       => 5000,
-                    'balance_after'=> $host->fresh()->diamond_balance,
-                    'reference'    => "live_reward:room:{$roomId}",
-                ]);
+            // SETNX is atomic — only succeeds for the FIRST caller
+            $claimed = \Illuminate\Support\Facades\Redis::command('SETNX', [$rewardKey, 1]);
+
+            if ($claimed) {
+                // Set expiry separately (SETNX doesn't support TTL)
+                \Illuminate\Support\Facades\Redis::expire($rewardKey, 86400 * 2);
+
+                // Credit diamonds inside a DB transaction for safety
+                \Illuminate\Support\Facades\DB::transaction(function () use ($host, $roomId, &$diamondReward, $today) {
+                    $host->increment('diamond_balance', 5000);
+                    $diamondReward = 5000;
+
+                    \App\Models\CoinTransaction::create([
+                        'user_id'      => $host->id,
+                        'type'         => 'live_reward',
+                        'amount'       => 5000,
+                        'balance_after'=> $host->fresh()->diamond_balance,
+                        'reference'    => "live_reward:room:{$roomId}:{$today}",
+                    ]);
+                });
             }
         }
         // ─────────────────────────────────────────────────────────────────
