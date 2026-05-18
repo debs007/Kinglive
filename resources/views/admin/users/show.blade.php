@@ -4,7 +4,8 @@
 
 @section('content')
 <div class="dashboard-row">
-    {{-- Profile Card --}}
+
+    {{-- ── Profile Card ──────────────────────────────────────────── --}}
     <div class="card" style="flex:0 0 280px">
         <div style="text-align:center;padding:12px 0">
             <img src="{{ $user->avatar_url }}" style="width:80px;height:80px;border-radius:50%;border:2px solid var(--gold)" alt="">
@@ -17,20 +18,25 @@
         </div>
 
         <table style="width:100%;font-size:13px;margin-top:12px">
-            @foreach([
-                ['Email', $user->email ?? '—'],
-                ['Phone', $user->phone ?? '—'],
-                ['Country', $user->country_code ?? '—'],
-                ['Level', "Lv. {$user->level}"],
-                ['Joined', $user->created_at->format('M d, Y')],
-                ['Last Seen', $user->last_seen_at?->diffForHumans() ?? '—'],
-                ['Followers', number_format($user->followers_count)],
-                ['Following', number_format($user->following_count)],
-                ['Rooms', number_format($user->rooms_count)],
-            ] as [$label, $value])
+            @php $profileRows = [
+                ['Email',       $user->email ?? '—'],
+                ['Phone',       $user->phone ?? '—'],
+                ['Country',     $user->country_code ?? '—'],
+                ['Level',       'Lv. '.$user->level],
+                ['Total Sent',  number_format($user->total_coins_sent ?? 0).' coins'],
+                ['Joined',      $user->created_at->format('M d, Y')],
+                ['Last Seen',   $user->last_seen_at?->diffForHumans() ?? '—'],
+                ['Followers',   number_format($user->followers_count)],
+                ['Following',   number_format($user->following_count)],
+                ['Total Lives', number_format($user->rooms_count)],
+                ['Live Mins',   number_format($user->total_live_minutes ?? 0)],
+                ['Video Days',  $user->video_live_days ?? 0],
+                ['Audio Days',  $user->audio_live_days ?? 0],
+            ]; @endphp
+            @foreach($profileRows as $row)
             <tr>
-                <td style="color:var(--text3);padding:5px 0">{{ $label }}</td>
-                <td style="text-align:right;padding:5px 0">{{ $value }}</td>
+                <td style="color:var(--text3);padding:5px 0">{{ $row[0] }}</td>
+                <td style="text-align:right;padding:5px 0;font-weight:600">{{ $row[1] }}</td>
             </tr>
             @endforeach
         </table>
@@ -38,11 +44,11 @@
         <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:8px;text-align:center">
             <div style="background:var(--surface2);border-radius:8px;padding:10px">
                 <div style="color:var(--gold);font-size:18px;font-weight:700">{{ number_format($user->coin_balance) }}</div>
-                <div style="color:var(--text3);font-size:11px">Coins</div>
+                <div style="color:var(--text3);font-size:11px">Coins 🪙</div>
             </div>
             <div style="background:var(--surface2);border-radius:8px;padding:10px">
                 <div style="color:var(--info);font-size:18px;font-weight:700">{{ number_format($user->diamond_balance) }}</div>
-                <div style="color:var(--text3);font-size:11px">Diamonds</div>
+                <div style="color:var(--text3);font-size:11px">Diamonds 💎</div>
             </div>
         </div>
 
@@ -71,213 +77,321 @@
         </div>
     </div>
 
-    <div style="flex:1;display:flex;flex-direction:column;gap:16px">
-        {{-- Ban History --}}
+    {{-- ── Right Panel ─────────────────────────────────────────────── --}}
+    <div style="flex:1;display:flex;flex-direction:column;gap:20px">
+
+        {{-- ── Coin Transactions ──────────────────────────────────── --}}
+        <div class="card">
+            <div class="card-header"><h3>🪙 Coin Transactions</h3></div>
+
+            {{-- Date filter --}}
+            <form method="GET" action="{{ url()->current() }}" style="display:flex;gap:8px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap">
+                <div>
+                    <label style="color:var(--text3);font-size:11px;display:block;margin-bottom:4px">From</label>
+                    <input type="date" name="coin_from" value="{{ request('coin_from') }}"
+                        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px">
+                </div>
+                <div>
+                    <label style="color:var(--text3);font-size:11px;display:block;margin-bottom:4px">To</label>
+                    <input type="date" name="coin_to" value="{{ request('coin_to') }}"
+                        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px">
+                </div>
+                {{-- preserve other filters --}}
+                @foreach(request()->except(['coin_from','coin_to','coin_recharge_page','coin_gift_page','coin_game_page']) as $k => $v)
+                    <input type="hidden" name="{{ $k }}" value="{{ $v }}">
+                @endforeach
+                <button type="submit" class="btn-primary" style="font-size:12px;padding:7px 16px">Filter</button>
+                @if(request('coin_from') || request('coin_to'))
+                    <a href="{{ url()->current() }}" class="btn-secondary" style="font-size:12px;padding:7px 12px">Clear</a>
+                @endif
+                @if(request('coin_from') || request('coin_to'))
+                    <span style="color:var(--text3);font-size:11px;align-self:center">
+                        {{ request('coin_from','—') }} → {{ request('coin_to','—') }}
+                    </span>
+                @endif
+            </form>
+
+            {{-- Tabs --}}
+            <div style="display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:0">
+                @php $coinTabs = [
+                    ['recharge', '💳 Recharge', $coinRecharge->total()],
+                    ['gifting',  '🎁 Gifting',  $coinGifting->total()],
+                    ['games',    '🎮 Games',     $coinGames->total()],
+                ]; @endphp
+                @foreach($coinTabs as $i => $ctab)
+                <button
+                    onclick="switchCoinTab('{{ $ctab[0] }}')"
+                    id="coin-tab-{{ $ctab[0] }}"
+                    style="padding:8px 16px;font-size:12px;border:none;background:none;cursor:pointer;
+                           border-bottom:2px solid {{ $i === 0 ? 'var(--gold)' : 'transparent' }};
+                           color:{{ $i === 0 ? 'var(--gold)' : 'var(--text3)' }}">
+                    {{ $ctab[1] }} <span style="color:var(--text3)">({{ number_format($ctab[2]) }})</span>
+                </button>
+                @endforeach
+            </div>
+
+            {{-- Recharge --}}
+            <div id="coin-pane-recharge">
+                @include('admin.users._txn_table', ['rows' => $coinRecharge, 'type' => 'coin', 'page_param' => 'coin_recharge_page'])
+            </div>
+            {{-- Gifting --}}
+            <div id="coin-pane-gifting" style="display:none">
+                @include('admin.users._txn_table', ['rows' => $coinGifting, 'type' => 'coin', 'page_param' => 'coin_gift_page'])
+            </div>
+            {{-- Games --}}
+            <div id="coin-pane-games" style="display:none">
+                @include('admin.users._txn_table', ['rows' => $coinGames, 'type' => 'coin', 'page_param' => 'coin_game_page'])
+            </div>
+        </div>
+
+        {{-- ── Diamond Transactions ───────────────────────────────── --}}
+        <div class="card">
+            <div class="card-header"><h3>💎 Diamond Transactions</h3></div>
+
+            <form method="GET" action="{{ url()->current() }}" style="display:flex;gap:8px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap">
+                <div>
+                    <label style="color:var(--text3);font-size:11px;display:block;margin-bottom:4px">From</label>
+                    <input type="date" name="diamond_from" value="{{ request('diamond_from') }}"
+                        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px">
+                </div>
+                <div>
+                    <label style="color:var(--text3);font-size:11px;display:block;margin-bottom:4px">To</label>
+                    <input type="date" name="diamond_to" value="{{ request('diamond_to') }}"
+                        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px">
+                </div>
+                @foreach(request()->except(['diamond_from','diamond_to','diamond_gift_page','diamond_reward_page']) as $k => $v)
+                    <input type="hidden" name="{{ $k }}" value="{{ $v }}">
+                @endforeach
+                <button type="submit" class="btn-primary" style="font-size:12px;padding:7px 16px">Filter</button>
+                @if(request('diamond_from') || request('diamond_to'))
+                    <a href="{{ url()->current() }}" class="btn-secondary" style="font-size:12px;padding:7px 12px">Clear</a>
+                @endif
+            </form>
+
+            <div style="display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border)">
+                @php $dTabs = [
+                    ['dgifts',   '🎁 Gift Received', $diamondGifts->total()],
+                    ['drewards', '🏆 Daily Rewards',  $diamondRewards->total()],
+                ]; @endphp
+                @foreach($dTabs as $i => $dtab)
+                <button
+                    onclick="switchDiamondTab('{{ $dtab[0] }}')"
+                    id="diamond-tab-{{ $dtab[0] }}"
+                    style="padding:8px 16px;font-size:12px;border:none;background:none;cursor:pointer;
+                           border-bottom:2px solid {{ $i === 0 ? 'var(--info)' : 'transparent' }};
+                           color:{{ $i === 0 ? 'var(--info)' : 'var(--text3)' }}">
+                    {{ $dtab[1] }} <span style="color:var(--text3)">({{ number_format($dtab[2]) }})</span>
+                </button>
+                @endforeach
+            </div>
+
+            <div id="diamond-pane-dgifts">
+                @include('admin.users._txn_table', ['rows' => $diamondGifts, 'type' => 'diamond', 'page_param' => 'diamond_gift_page'])
+            </div>
+            <div id="diamond-pane-drewards" style="display:none">
+                @include('admin.users._txn_table', ['rows' => $diamondRewards, 'type' => 'diamond', 'page_param' => 'diamond_reward_page'])
+            </div>
+        </div>
+
+        {{-- ── Past Lives ─────────────────────────────────────────── --}}
         <div class="card">
             <div class="card-header">
-                <h3>Ban History</h3>
+                <h3>📺 Past Lives</h3>
+                <span style="color:var(--text3);font-size:12px">{{ $pastLives->total() }} sessions total</span>
+            </div>
+
+            <form method="GET" action="{{ url()->current() }}" style="display:flex;gap:8px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap">
+                <div>
+                    <label style="color:var(--text3);font-size:11px;display:block;margin-bottom:4px">From</label>
+                    <input type="date" name="live_from" value="{{ request('live_from') }}"
+                        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px">
+                </div>
+                <div>
+                    <label style="color:var(--text3);font-size:11px;display:block;margin-bottom:4px">To</label>
+                    <input type="date" name="live_to" value="{{ request('live_to') }}"
+                        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px">
+                </div>
+                @foreach(request()->except(['live_from','live_to','lives_page']) as $k => $v)
+                    <input type="hidden" name="{{ $k }}" value="{{ $v }}">
+                @endforeach
+                <button type="submit" class="btn-primary" style="font-size:12px;padding:7px 16px">Filter</button>
+                @if(request('live_from') || request('live_to'))
+                    <a href="{{ url()->current() }}" class="btn-secondary" style="font-size:12px;padding:7px 12px">Clear</a>
+                    <span style="color:var(--text3);font-size:11px;align-self:center">
+                        {{ request('live_from','—') }} → {{ request('live_to','—') }}
+                    </span>
+                @endif
+            </form>
+
+            @if($pastLives->isEmpty())
+                <p style="color:var(--text3);font-size:13px;text-align:center;padding:24px">No live sessions found.</p>
+            @else
+            <table style="width:100%;font-size:12px;border-collapse:collapse">
+                <thead>
+                    <tr style="border-bottom:1px solid var(--border)">
+                        @foreach(['Date','Type','Title','Duration','Viewers','Diamonds','Reward','Status'] as $h)
+                        <th style="text-align:left;padding:8px 6px;color:var(--text3);font-weight:600">{{ $h }}</th>
+                        @endforeach
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach($pastLives as $live)
+                <tr style="border-bottom:1px solid var(--border);transition:background .15s" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+                    <td style="padding:10px 6px;white-space:nowrap">
+                        {{ $live->started_at?->format('M d, Y') ?? '—' }}<br>
+                        <span style="color:var(--text3);font-size:11px">{{ $live->started_at?->format('H:i') ?? '' }}</span>
+                    </td>
+                    <td style="padding:10px 6px">
+                        <span style="background:var(--surface2);padding:2px 8px;border-radius:10px;font-size:11px">
+                            {{ $live->type === 'audio_board' ? '🎤 Audio Party' : ($live->type === 'video' ? '📹 Video' : '🔊 Audio') }}
+                        </span>
+                    </td>
+                    <td style="padding:10px 6px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                        {{ $live->title ?? '—' }}
+                    </td>
+                    <td style="padding:10px 6px">
+                        @php
+                            $h = intdiv($live->duration_mins, 60);
+                            $m = $live->duration_mins % 60;
+                        @endphp
+                        <span style="{{ $live->duration_mins >= 40 ? 'color:var(--success)' : '' }}">
+                            {{ $h > 0 ? "{$h}h {$m}m" : "{$m}m" }}
+                        </span>
+                    </td>
+                    <td style="padding:10px 6px">{{ number_format($live->viewer_count ?? 0) }}</td>
+                    <td style="padding:10px 6px">{{ number_format($live->total_gifts_received ?? 0) }} 💎</td>
+                    <td style="padding:10px 6px">
+                        @if(! $live->reward_eligible)
+                            <span style="color:var(--text3);font-size:11px">
+                                {{ $live->type !== 'video' ? 'Not video' : '< 40 min' }}
+                            </span>
+                        @elseif($live->reward_collected)
+                            <span style="color:var(--success);font-weight:600">✅ +5,000 💎</span>
+                        @elseif($live->show_credit_btn)
+                            <button
+                                id="reward-btn-{{ $live->id }}"
+                                onclick="creditReward({{ $user->id }}, '{{ $live->live_date }}', '{{ $live->id }}')"
+                                style="padding:4px 10px;font-size:11px;border-radius:6px;border:none;
+                                       background:#f39c12;color:#000;cursor:pointer;font-weight:600">
+                                💎 Credit 5K
+                            </button>
+                        @else
+                            <span style="color:var(--text3);font-size:11px" title="Reward credited on another session this day">—</span>
+                        @endif
+                    </td>
+                    <td style="padding:10px 6px">
+                        <span class="badge {{ $live->status === 'live' ? 'badge-active' : 'badge-expired' }}">
+                            {{ strtoupper($live->status) }}
+                        </span>
+                    </td>
+                </tr>
+                @endforeach
+                </tbody>
+            </table>
+            <div style="margin-top:12px;display:flex;align-items:center;gap:8px;font-size:12px">
+                @if($pastLives->onFirstPage())
+                    <span style="padding:5px 12px;border-radius:6px;background:var(--bg3);color:var(--text3)">← Prev</span>
+                @else
+                    <a href="{{ $pastLives->previousPageUrl() }}&{{ http_build_query(request()->all()) }}"
+                       style="padding:5px 12px;border-radius:6px;background:var(--surface2);color:var(--text);text-decoration:none;border:1px solid var(--border)">← Prev</a>
+                @endif
+                <span style="color:var(--text3)">Page {{ $pastLives->currentPage() }} of {{ $pastLives->lastPage() }}</span>
+                @if($pastLives->hasMorePages())
+                    <a href="{{ $pastLives->nextPageUrl() }}&{{ http_build_query(request()->all()) }}"
+                       style="padding:5px 12px;border-radius:6px;background:var(--surface2);color:var(--text);text-decoration:none;border:1px solid var(--border)">Next →</a>
+                @else
+                    <span style="padding:5px 12px;border-radius:6px;background:var(--bg3);color:var(--text3)">Next →</span>
+                @endif
+            </div>
+            @endif
+        </div>
+
+        {{-- ── Ban History ─────────────────────────────────────────── --}}
+        <div class="card">
+            <div class="card-header">
+                <h3>🚫 Ban History</h3>
                 <button class="btn-sm btn-danger" onclick="document.getElementById('banUserId').value={{ $user->id }};document.getElementById('banModal').classList.remove('hidden')">+ New Ban</button>
             </div>
             @if($user->bans->isEmpty())
                 <p style="color:var(--text3);font-size:13px">No bans on record.</p>
             @else
-            <table class="admin-table">
-                <thead><tr><th>Type</th><th>Reason</th><th>By</th><th>Expires</th><th>Status</th></tr></thead>
-                <tbody>
-                    @foreach($user->bans as $ban)
-                    <tr>
-                        <td><span class="badge badge-{{ $ban->type }}">{{ strtoupper($ban->type) }}</span></td>
-                        <td>{{ Str::limit($ban->reason, 50) }}</td>
-                        <td>{{ $ban->bannedBy?->username ?? 'System' }}</td>
-                        <td class="text-muted">{{ $ban->expires_at?->format('M d, Y') ?? 'Permanent' }}</td>
-                        <td><span class="badge badge-{{ $ban->is_active && !$ban->isExpired() ? 'active' : 'expired' }}">{{ $ban->status_label }}</span></td>
-                    </tr>
+            <table style="width:100%;font-size:12px;border-collapse:collapse">
+                <thead><tr style="border-bottom:1px solid var(--border)">
+                    @foreach(['Room','Reason','Banned By','Date','Expires'] as $h)
+                    <th style="padding:8px 6px;text-align:left;color:var(--text3)">{{ $h }}</th>
                     @endforeach
+                </tr></thead>
+                <tbody>
+                @foreach($user->bans as $ban)
+                <tr style="border-bottom:1px solid var(--border)">
+                    <td style="padding:8px 6px">{{ $ban->room_id ?? 'Global' }}</td>
+                    <td style="padding:8px 6px">{{ $ban->reason ?? '—' }}</td>
+                    <td style="padding:8px 6px">{{ $ban->bannedBy?->username ?? '—' }}</td>
+                    <td style="padding:8px 6px">{{ $ban->created_at->format('M d, Y') }}</td>
+                    <td style="padding:8px 6px">{{ $ban->expires_at?->format('M d, Y') ?? 'Permanent' }}</td>
+                </tr>
+                @endforeach
                 </tbody>
             </table>
             @endif
         </div>
 
-        {{-- Top Gifts --}}
-        @if($topGifts->isNotEmpty())
-        <div class="card">
-            <div class="card-header"><h3>Top Gifts Sent</h3></div>
-            <div style="display:flex;gap:12px;flex-wrap:wrap">
-                @foreach($topGifts as $g)
-                <div style="background:var(--surface2);border-radius:8px;padding:10px;text-align:center;min-width:80px">
-                    <img src="{{ $g->gift->thumbnail_url }}" style="width:40px;height:40px;border-radius:6px" alt="">
-                    <div style="font-size:12px;margin-top:4px">{{ $g->gift->name }}</div>
-                    <div style="color:var(--gold);font-size:11px">×{{ $g->count }}</div>
-                </div>
-                @endforeach
-            </div>
-        </div>
-        @endif
-
-        {{-- 
-  Replace the "Coin History" card in resources/views/admin/users/show.blade.php
-  with this entire block.
---}}
-
-{{-- Coin Transaction History --}}
-<div class="card" style="margin-top:24px">
-    <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
-        <div style="display:flex;align-items:center;gap:8px">
-            <span style="font-size:18px">🪙</span>
-            <h3 style="margin:0">Coin Transactions</h3>
-        </div>
-        <div style="font-size:12px;color:var(--text3)">
-            Showing: <strong>{{ \Carbon\Carbon::parse($from)->format('M d, Y') }}</strong>
-            @if($from !== $to) → <strong>{{ \Carbon\Carbon::parse($to)->format('M d, Y') }}</strong> @endif
-        </div>
-    </div>
-
-    {{-- Date Range Filter --}}
-    <div style="padding:16px 20px;border-bottom:1px solid var(--border)">
-        <form method="GET" action="{{ request()->url() }}" style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
-            <div>
-                <label style="display:block;font-size:12px;color:var(--text3);margin-bottom:4px">From</label>
-                <input type="date" name="from" value="{{ $from }}"
-                       style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">
-            </div>
-            <div>
-                <label style="display:block;font-size:12px;color:var(--text3);margin-bottom:4px">To</label>
-                <input type="date" name="to" value="{{ $to }}"
-                       style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">
-            </div>
-            <button type="submit" style="padding:8px 20px;border-radius:8px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:13px;font-weight:600">
-                🔍 Filter
-            </button>
-            <a href="{{ request()->url() }}"
-               style="padding:8px 16px;border-radius:8px;border:1px solid var(--border);color:var(--text3);font-size:13px;text-decoration:none">
-                Today
-            </a>
-            <a href="{{ request()->url() }}?from={{ now()->startOfWeek()->toDateString() }}&to={{ now()->toDateString() }}"
-               style="padding:8px 16px;border-radius:8px;border:1px solid var(--border);color:var(--text3);font-size:13px;text-decoration:none">
-                This Week
-            </a>
-            <a href="{{ request()->url() }}?from={{ now()->startOfMonth()->toDateString() }}&to={{ now()->toDateString() }}"
-               style="padding:8px 16px;border-radius:8px;border:1px solid var(--border);color:var(--text3);font-size:13px;text-decoration:none">
-                This Month
-            </a>
-        </form>
-    </div>
-
-    {{-- Summary Cards --}}
-    @if($summary)
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border)">
-        <div style="padding:16px 20px;background:var(--bg)">
-            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">Total Transactions</div>
-            <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:4px">{{ number_format($summary->total_tx) }}</div>
-        </div>
-        <div style="padding:16px 20px;background:var(--bg)">
-            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">Coins Received</div>
-            <div style="font-size:22px;font-weight:700;color:#27ae60;margin-top:4px">+{{ number_format($summary->total_in) }}</div>
-        </div>
-        <div style="padding:16px 20px;background:var(--bg)">
-            <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">Coins Spent</div>
-            <div style="font-size:22px;font-weight:700;color:#e74c3c;margin-top:4px">-{{ number_format($summary->total_out) }}</div>
-        </div>
-    </div>
-    @endif
-
-    {{-- Transactions Table --}}
-    @if($coinHistory->isEmpty())
-        <div style="padding:40px;text-align:center;color:var(--text3)">
-            No transactions found for this date range.
-        </div>
-    @else
-    <div style="overflow-x:auto">
-        <table class="admin-table">
-            <thead>
-                <tr>
-                    <th>Type</th>
-                    <th>Amount</th>
-                    <th>Balance After</th>
-                    <th>Reference</th>
-                    <th>Date & Time</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach($coinHistory as $tx)
-                <tr>
-                    <td>
-                        <span style="display:inline-flex;align-items:center;gap:6px">
-                            @php
-                                $icon = match(true) {
-                                    str_contains($tx->type, 'gift')       => '🎁',
-                                    str_contains($tx->type, 'game')       => '🎮',
-                                    str_contains($tx->type, 'purchase')   => '💳',
-                                    str_contains($tx->type, 'admin')      => '⚙️',
-                                    str_contains($tx->type, 'reward')     => '🏆',
-                                    str_contains($tx->type, 'refund')     => '↩️',
-                                    default                                => '🪙',
-                                };
-                            @endphp
-                            {{ $icon }}
-                            {{ ucwords(str_replace('_', ' ', $tx->type)) }}
-                        </span>
-                    </td>
-                    <td>
-                        <span style="font-weight:600;color:{{ $tx->amount >= 0 ? '#27ae60' : '#e74c3c' }}">
-                            {{ $tx->amount >= 0 ? '+' : '' }}{{ number_format($tx->amount) }}
-                        </span>
-                    </td>
-                    <td style="color:var(--text3)">{{ number_format($tx->balance_after) }}</td>
-                    <td style="font-size:12px;color:var(--text3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                        title="{{ $tx->reference }}">
-                        {{ Str::limit($tx->reference ?? '—', 40) }}
-                    </td>
-                    <td style="color:var(--text3);white-space:nowrap;font-size:13px">
-                        {{ $tx->created_at->format('M d, Y') }}<br>
-                        <span style="font-size:11px">{{ $tx->created_at->format('h:i A') }}</span>
-                    </td>
-                </tr>
-                @endforeach
-            </tbody>
-        </table>
-    </div>
-
-    {{-- Pagination --}}
-    @if($coinHistory->hasPages())
-    <div style="padding:16px 20px;border-top:1px solid var(--border)">
-        {{ $coinHistory->links() }}
-    </div>
-    @endif
-    @endif
-</div>
-    </div>
+    </div>{{-- end right panel --}}
 </div>
 
-{{-- Quick Ban Modal --}}
-<div id="banModal" class="modal hidden">
-    <div class="modal-content">
-        <h3>🚫 Ban {{ $user->username }}</h3>
-        <form action="{{ route('admin.bans.store') }}" method="POST">
-            @csrf
-            <input type="hidden" name="user_id" id="banUserId" value="{{ $user->id }}">
-            <div class="form-group"><label>Type</label>
-                <select name="type" onchange="document.getElementById('roomIdField').style.display=this.value==='room'?'block':'none'">
-                    <option value="global">Global</option><option value="live">Live</option>
-                    <option value="chat">Chat</option><option value="room">Room</option>
-                </select>
-            </div>
-            <div class="form-group" id="roomIdField" style="display:none">
-                <label>Room ID</label><input type="text" name="room_id" placeholder="Room UUID">
-            </div>
-            <div class="form-group"><label>Duration</label>
-                <select name="duration">
-                    <option value="1h">1 Hour</option><option value="3h">3 Hours</option>
-                    <option value="1d">1 Day</option><option value="7d">7 Days</option>
-                    <option value="30d">30 Days</option><option value="permanent">Permanent</option>
-                </select>
-            </div>
-            <div class="form-group"><label>Reason *</label><input type="text" name="reason" required placeholder="Reason for ban"></div>
-            <div class="form-actions">
-                <button type="button" class="btn-secondary" onclick="document.getElementById('banModal').classList.add('hidden')">Cancel</button>
-                <button type="submit" class="btn-danger">Apply Ban</button>
-            </div>
-        </form>
-    </div>
-</div>
+<script>
+function switchCoinTab(tab) {
+    ['recharge','gifting','games'].forEach(t => {
+        document.getElementById('coin-pane-' + t).style.display = t === tab ? '' : 'none';
+        const btn = document.getElementById('coin-tab-' + t);
+        btn.style.borderBottomColor = t === tab ? 'var(--gold)' : 'transparent';
+        btn.style.color = t === tab ? 'var(--gold)' : 'var(--text3)';
+    });
+}
+async function creditReward(userId, date, roomId) {
+    const btn = document.getElementById('reward-btn-' + roomId);
+    if (!btn) return;
+    btn.disabled = true;
+    btn.textContent = 'Crediting...';
+    btn.style.opacity = '0.6';
+
+    try {
+        const res = await fetch(`/admin/users/${userId}/credit-reward`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name=csrf-token]')?.content
+                    || '{{ csrf_token() }}'
+            },
+            body: JSON.stringify({ date })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            btn.closest('td').innerHTML =
+                '<span style="color:var(--success);font-weight:600">✅ +5,000 💎</span>';
+        } else {
+            btn.textContent = '⚠️ ' + (data.message || 'Failed');
+            btn.style.background = 'var(--danger)';
+            btn.style.color = '#fff';
+            btn.disabled = false;
+            btn.style.opacity = '1';
+        }
+    } catch (e) {
+        btn.textContent = 'Error';
+        btn.style.background = 'var(--danger)';
+        btn.disabled = false;
+        btn.style.opacity = '1';
+    }
+}
+
+function switchDiamondTab(tab) {
+    ['dgifts','drewards'].forEach(t => {
+        document.getElementById('diamond-pane-' + t).style.display = t === tab ? '' : 'none';
+        const btn = document.getElementById('diamond-tab-' + t);
+        btn.style.borderBottomColor = t === tab ? 'var(--info)' : 'transparent';
+        btn.style.color = t === tab ? 'var(--info)' : 'var(--text3)';
+    });
+}
+</script>
 @endsection

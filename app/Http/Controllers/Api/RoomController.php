@@ -195,34 +195,36 @@ class RoomController extends Controller
         $host->update($updates);
 
         // ── Diamond reward for 40+ minute video live ──────────────────────
-        // Uses Redis SETNX (atomic set-if-not-exists) to prevent race conditions.
-        // If multiple requests race, only ONE will get SETNX = 1 (success).
-        // The others get 0 and are skipped — no double crediting.
         $diamondReward = 0;
         if ($durationMins >= 40 && $room->type === 'video') {
             $today     = now()->toDateString();
             $rewardKey = "diamond_reward_given:{$host->id}:{$today}";
 
-            // SETNX is atomic — only succeeds for the FIRST caller
-            $claimed = \Illuminate\Support\Facades\Redis::command('SETNX', [$rewardKey, 1]);
+            // Use SET with NX option — works with both phpredis and predis
+            // Returns true/OK if set, null/false if key already existed
+            try {
+                $claimed = \Illuminate\Support\Facades\Redis::set(
+                    $rewardKey, 1, 'EX', 86400 * 2, 'NX'
+                );
+            } catch (\Exception $e) {
+                // Fallback: manual check if Redis::set with NX not supported
+                $claimed = ! \Illuminate\Support\Facades\Redis::exists($rewardKey);
+                if ($claimed) {
+                    \Illuminate\Support\Facades\Redis::setex($rewardKey, 86400 * 2, 1);
+                }
+            }
 
             if ($claimed) {
-                // Set expiry separately (SETNX doesn't support TTL)
-                \Illuminate\Support\Facades\Redis::expire($rewardKey, 86400 * 2);
+                $host->increment('diamond_balance', 5000);
+                $diamondReward = 5000;
 
-                // Credit diamonds inside a DB transaction for safety
-                \Illuminate\Support\Facades\DB::transaction(function () use ($host, $roomId, &$diamondReward, $today) {
-                    $host->increment('diamond_balance', 5000);
-                    $diamondReward = 5000;
-
-                    \App\Models\CoinTransaction::create([
-                        'user_id'      => $host->id,
-                        'type'         => 'live_reward',
-                        'amount'       => 5000,
-                        'balance_after'=> $host->fresh()->diamond_balance,
-                        'reference'    => "live_reward:room:{$roomId}:{$today}",
-                    ]);
-                });
+                \App\Models\CoinTransaction::create([
+                    'user_id'       => $host->id,
+                    'type'          => 'live_reward',
+                    'amount'        => 5000,
+                    'balance_after' => $host->fresh()->diamond_balance,
+                    'reference'     => "live_reward:room:{$roomId}:{$today}",
+                ]);
             }
         }
         // ─────────────────────────────────────────────────────────────────

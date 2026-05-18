@@ -34,7 +34,7 @@ Route::prefix('coin-seller')->name('coin_seller.')->group(function () {
         Route::get ('users',                      [CoinSellerPortalController::class, 'users'])->name('users');
         Route::post('users/{id}/add-coins',       [CoinSellerPortalController::class, 'addCoins'])->name('users.add_coins');
         Route::get ('transactions',               [CoinSellerPortalController::class, 'transactions'])->name('transactions');
-        Route::post('update-profile',             [CoinSellerPortalController::class, 'updateProfile'])->name('update_profile');
+        Route::post('update-profile',              [CoinSellerPortalController::class, 'updateProfile'])->name('update_profile');
     });
 });
 
@@ -78,6 +78,7 @@ Route::prefix('admin')->name('admin.')->group(function () {
         Route::get ('users/{id}',          [UserController::class, 'show'])->name('users.show');
         Route::put ('users/{id}/role',     [UserController::class, 'updateRole'])->name('users.role');
         Route::post('users/{id}/coins',    [UserController::class, 'adjustCoins'])->name('users.coins');
+        Route::post('users/{id}/credit-reward', [UserController::class, 'creditMissedReward'])->name('users.credit_reward');
         Route::post('users/{id}/toggle',   [UserController::class, 'toggleActive'])->name('users.toggle');
 
         // Bans

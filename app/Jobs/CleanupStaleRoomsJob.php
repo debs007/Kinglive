@@ -129,10 +129,16 @@ class CleanupStaleRoomsJob implements ShouldQueue
                 }
 
                 // Diamond reward for 40+ min video stream
+                // SETNX is atomic — prevents double credit if both end() and cleanup run
                 if ($type === 'video') {
                     $rewardKey = "diamond_reward_given:{$host->id}:" . $endedAt->toDateString();
-                    if (! Redis::get($rewardKey)) {
-                        Redis::setex($rewardKey, 86400, 1);
+                    try {
+                        $claimed = Redis::set($rewardKey, 1, 'EX', 86400 * 2, 'NX');
+                    } catch (\Exception $e) {
+                        $claimed = ! Redis::exists($rewardKey);
+                        if ($claimed) Redis::setex($rewardKey, 86400 * 2, 1);
+                    }
+                    if ($claimed) {
                         $host->increment('diamond_balance', 5000);
                         CoinTransaction::create([
                             'user_id'      => $host->id,
@@ -141,6 +147,7 @@ class CleanupStaleRoomsJob implements ShouldQueue
                             'balance_after'=> $host->fresh()->diamond_balance,
                             'reference'    => "live_reward:room:{$room->id}",
                         ]);
+                        Log::info("CleanupStaleRooms: rewarded {$host->id} 5000 diamonds for room {$room->id}");
                     }
                 }
             }
