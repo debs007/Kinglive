@@ -97,6 +97,7 @@ class WebSocketHandler
             match ($data['type']) {
                 'room.join'           => static::handleRoomJoin($server, $fd, $conn, $data),
                 'room.leave'          => static::handleRoomLeave($server, $fd, $conn),
+                'stream.end'          => static::handleStreamEnd($server, $fd, $conn, $data),
                 'chat.message'        => static::handleChat($server, $fd, $conn, $data),
                 'seat.request'        => static::handleSeatRequest($server, $fd, $conn, $data),
                 'seat.response'       => static::handleSeatResponse($server, $fd, $conn, $data),
@@ -213,22 +214,28 @@ class WebSocketHandler
         Redis::expire("room:{$roomId}:fds", 86400);
 
         $room = Room::find($roomId);
-        if ($room?->host_user_id !== $conn['user_id']) {
+        $isHost = $room?->host_user_id === $conn['user_id'];
+
+        if (! $isHost) {
             $newCount = Redis::incr("room:{$roomId}:viewers");
-            // Sync to DB so room list shows accurate count
             Room::where('id', $roomId)->update(['viewer_count' => (int) $newCount]);
         }
 
         $currentViewerCount = (int) Redis::get("room:{$roomId}:viewers");
 
-        static::broadcastToRoom($server, $roomId, [
-            'type'         => 'user.joined',
-            'user_id'      => $conn['user_id'],
-            'username'     => $conn['username'],
-            'avatar'       => $conn['avatar'],
-            'level'        => (int) ($conn['level'] ?? 1),
-            'viewer_count' => $currentViewerCount,
-        ], exclude: $fd, crossBroadcast: false);
+        // Only broadcast user.joined for non-host joins
+        // Host joining their own room should not show as a viewer join
+        if (! $isHost) {
+            static::broadcastToRoom($server, $roomId, [
+                'type'         => 'user.joined',
+                'room_id'      => $roomId,
+                'user_id'      => $conn['user_id'],
+                'username'     => $conn['username'],
+                'avatar'       => $conn['avatar'],
+                'level'        => (int) ($conn['level'] ?? 1),
+                'viewer_count' => $currentViewerCount,
+            ], exclude: $fd, crossBroadcast: false);
+        }
 
         // Also send updated count to the joiner themselves
         $server->push($fd, json_encode([
@@ -286,6 +293,7 @@ class WebSocketHandler
 
         $server->push($fd, json_encode([
             'type'              => 'room.state',
+            'room_id'           => $roomId,
             'viewer_count'      => (int) Redis::get("room:{$roomId}:viewers"),
             'recent_chat'       => array_values($chat),
             'seats'             => $seatsObj,
@@ -337,6 +345,21 @@ class WebSocketHandler
         }
     }
 
+    private static function handleStreamEnd(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId = $conn['room_id'] ?? ($data['room_id'] ?? null);
+        if (! $roomId) return;
+
+        $room = \App\Models\Room::find($roomId);
+        if ($room?->host_user_id !== $conn['user_id']) return;
+
+        // Broadcast room.ended to audience — exclude host so they don't get the dialog
+        static::broadcastToRoom($server, $roomId, [
+            'type'    => 'room.ended',
+            'room_id' => $roomId,
+        ], exclude: $fd, crossBroadcast: false);
+    }
+
     private static function handleRoomLeave(Server $server, int $fd, array &$conn): void
     {
         if ($conn['room_id']) static::removeFromRoom($server, $fd, $conn);
@@ -364,6 +387,10 @@ class WebSocketHandler
         // Without this, new joiners see ghost participants in room.state
         if (Redis::hexists("call:{$roomId}:participants", $conn['user_id'])) {
             Redis::hdel("call:{$roomId}:participants", $conn['user_id']);
+        // If no participants left, remove host too
+        if (Redis::hlen("call:{$roomId}:participants") <= 1) {
+            Redis::del("call:{$roomId}:participants");
+        }
             static::broadcastToRoom($server, $roomId, [
                 'type'    => 'call.left',
                 'user_id' => $conn['user_id'],
@@ -517,7 +544,24 @@ class WebSocketHandler
         Redis::del("room:{$roomId}:user_pending:{$userId}");
 
         if ($accepted) {
-            // agora_uid = user_id (Agora channel uid matches DB user id)
+            // Check seat not already taken (race condition guard)
+            $existing = Redis::hget("room:{$roomId}:seats", $seatIndex);
+            if ($existing) {
+                $existingSeat = json_decode($existing, true);
+                if (isset($existingSeat['user_id'])) {
+                    // Seat already taken — deny this request
+                    if ($targetFd && $server->isEstablished($targetFd)) {
+                        $server->push($targetFd, json_encode([
+                            'type'       => 'seat.response',
+                            'accepted'   => false,
+                            'seat_index' => -1,
+                            'reason'     => 'Seat already taken',
+                        ]));
+                    }
+                    return;
+                }
+            }
+
             $agoraUid = (int) $userId;
 
             Redis::hset("room:{$roomId}:seats", $seatIndex, json_encode([
@@ -526,6 +570,30 @@ class WebSocketHandler
                 'avatar'    => static::$connections[$targetFd]['avatar'] ?? '',
                 'agora_uid' => $agoraUid,
             ]));
+
+            // Auto-deny any OTHER pending requests for this same seat
+            $allPendingKeys = Redis::keys("room:{$roomId}:user_pending:*");
+            foreach ($allPendingKeys as $key) {
+                $pendingSeatIdx = (int) Redis::get($key);
+                if ($pendingSeatIdx === $seatIndex) {
+                    // Extract user_id from key: room:{roomId}:user_pending:{userId}
+                    $parts         = explode(':', $key);
+                    $pendingUserId = (int) end($parts);
+                    if ($pendingUserId !== $userId) {
+                        Redis::del($key);
+                        Redis::del("room:{$roomId}:seat_request:{$seatIndex}");
+                        $pendingFd = static::getFdByUserId($pendingUserId);
+                        if ($pendingFd && $server->isEstablished($pendingFd)) {
+                            $server->push($pendingFd, json_encode([
+                                'type'       => 'seat.response',
+                                'accepted'   => false,
+                                'seat_index' => -1,
+                                'reason'     => 'Seat was taken by another user',
+                            ]));
+                        }
+                    }
+                }
+            }
 
             static::broadcastToRoom($server, $roomId, [
                 'type'       => 'seat.assigned',
@@ -723,8 +791,9 @@ class WebSocketHandler
 
         $totalDiamonds      = ($gift->diamond_value ?? 0) * $quantity;
         $room               = \App\Models\Room::find($roomId);
+        // GiftService already credited diamonds to host — read actual DB balance
         $hostDiamondBalance = $room
-            ? (\App\Models\User::find($room->host_user_id)?->diamond_balance ?? 0) + $totalDiamonds
+            ? (\App\Models\User::find($room->host_user_id)?->diamond_balance ?? 0)
             : 0;
 
         static::broadcastToRoom($server, $roomId, [
@@ -1029,14 +1098,31 @@ class WebSocketHandler
 
     private static function flushPendingBroadcasts(Server $server): void
     {
-        $raw = Redis::rpop("ws:pending_broadcasts");
-        if (! $raw) return;
+        // Process up to 10 pending broadcasts per tick
+        for ($i = 0; $i < 10; $i++) {
+            $raw = Redis::rpop("ws:pending_broadcasts");
+            if (! $raw) break;
 
-        $item = json_decode($raw, true);
-        if (! $item || time() > ($item['expires'] ?? 0)) return;
+            $item = json_decode($raw, true);
+            if (! $item || time() > ($item['expires'] ?? 0)) continue;
 
-        foreach ($item['rooms'] as $roomId) {
-            static::broadcastToRoom($server, $roomId, json_decode($item['payload'], true));
+            $payload = json_decode($item['payload'], true);
+
+            foreach ($item['rooms'] as $roomId) {
+                static::broadcastToRoom($server, $roomId, $payload, crossBroadcast: false);
+            }
+
+            // If this is a room shutdown, also end the room in DB
+            if (($payload['type'] ?? '') === 'room.admin_off') {
+                $roomId = $item['rooms'][0] ?? null;
+                if ($roomId) {
+                    \App\Models\Room::where('id', $roomId)
+                        ->where('status', 'live')
+                        ->update(['status' => 'ended', 'ended_at' => now()]);
+                    app(\App\Services\LiveRoomService::class)->cleanupRoom($roomId);
+                    Log::info("Admin forced room {$roomId} off via broadcast queue");
+                }
+            }
         }
     }
 
@@ -1166,6 +1252,7 @@ class WebSocketHandler
             $agoraUid   = $userId;
             $targetConn = static::$connections[$targetFd] ?? [];
 
+            // Add the accepted participant
             Redis::hset($callKey, $userId, json_encode([
                 'user_id'    => $userId,
                 'username'   => $targetConn['username'] ?? '',
@@ -1173,6 +1260,9 @@ class WebSocketHandler
                 'agora_uid'  => $agoraUid,
                 'camera_off' => true,
             ]));
+
+            // NOTE: host is NOT stored in call participants hash —
+            // host is shown as main video, not as a participant tile
             Redis::expire($callKey, 86400);
 
             $server->push($targetFd, json_encode(['type' => 'call.accepted', 'agora_uid' => $agoraUid]));
@@ -1196,6 +1286,10 @@ class WebSocketHandler
         if (! $roomId) return;
 
         Redis::hdel("call:{$roomId}:participants", $conn['user_id']);
+        // If no participants left, remove host too
+        if (Redis::hlen("call:{$roomId}:participants") <= 1) {
+            Redis::del("call:{$roomId}:participants");
+        }
         static::broadcastToRoom($server, $roomId, ['type' => 'call.left', 'user_id' => $conn['user_id']]);
     }
 

@@ -16,80 +16,108 @@ class CoinSellerPortalController extends Controller
         return CoinSeller::findOrFail(session('coin_seller_id'));
     }
 
-    public function loginForm()  { return view('coin_seller.auth.login'); }
+    // ── Auth ──────────────────────────────────────────────────────────────────
+
+    public function loginForm()
+    {
+        return view('coin_seller.auth.login');
+    }
 
     public function login(Request $request)
     {
-        $data   = $request->validate(['email' => ['required','email'], 'password' => ['required']]);
+        $data = $request->validate([
+            'email'    => ['required', 'email'],
+            'password' => ['required'],
+        ]);
+
         $seller = CoinSeller::where('email', $data['email'])->first();
 
-        if (! $seller)             return back()->withErrors(['email' => 'No account found.']);
-        if (! $seller->is_active)  return back()->withErrors(['email' => 'Account inactive.']);
-        if (! Hash::check($data['password'], $seller->password))
-                                   return back()->withErrors(['email' => 'Incorrect password.']);
+        if (! $seller) {
+            return back()->withErrors(['email' => 'No account found with that email.']);
+        }
 
+        if (! $seller->is_active) {
+            return back()->withErrors(['email' => 'Your account is inactive.']);
+        }
+
+        if (! Hash::check($data['password'], $seller->password)) {
+            return back()->withErrors(['email' => 'Incorrect password.']);
+        }
+
+        // Generate unique token stored in both DB and session
         $token = bin2hex(random_bytes(32));
         $seller->update(['session_token' => $token]);
+
         session()->invalidate();
         session()->regenerate();
-        session(['coin_seller_id' => $seller->id, 'coin_seller_name' => $seller->name, 'coin_seller_token' => $token]);
+        session([
+            'coin_seller_id'    => $seller->id,
+            'coin_seller_name'  => $seller->name,
+            'coin_seller_token' => $token,
+        ]);
 
         return redirect()->route('coin_seller.dashboard');
     }
 
     public function logout(Request $request)
     {
-        if ($id = session('coin_seller_id'))
-            CoinSeller::where('id', $id)->update(['session_token' => null]);
+        // Clear token from DB so no one can reuse it
+        $sellerId = session('coin_seller_id');
+        if ($sellerId) {
+            \App\Models\CoinSeller::where('id', $sellerId)
+                ->update(['session_token' => null]);
+        }
         $request->session()->invalidate();
         $request->session()->regenerateToken();
         return redirect()->route('coin_seller.login');
     }
 
+    // ── Dashboard ─────────────────────────────────────────────────────────────
+
     public function dashboard()
     {
-        if (! session('coin_seller_id') || ! session('coin_seller_token'))
+        // Hard auth check — belt and suspenders
+        if (! session('coin_seller_id') || ! session('coin_seller_token')) {
             return redirect()->route('coin_seller.login');
-
-        $seller        = $this->seller();
-        $soldToday     = $seller->soldToday();
+        }
+        $seller       = $this->seller();
+        $soldToday    = $seller->soldToday();
         $soldThisMonth = $seller->soldThisMonth();
-        $recentTx      = $seller->transactions()
+        $recentTx     = $seller->transactions()
             ->with('user:id,username,avatar_url')
-            ->latest()->limit(10)->get();
+            ->latest()
+            ->limit(10)
+            ->get();
 
-        return view('coin_seller.dashboard', compact('seller', 'soldToday', 'soldThisMonth', 'recentTx'));
+        return view('coin_seller.dashboard', compact(
+            'seller', 'soldToday', 'soldThisMonth', 'recentTx'
+        ));
     }
 
-    // ── Update price & phone ──────────────────────────────────────────────────
-
-    public function updateProfile(Request $request)
-    {
-        if (! session('coin_seller_id')) return redirect()->route('coin_seller.login');
-
-        $data = $request->validate([
-            'price_per_100k'  => ['required', 'numeric', 'min:1'],
-            'whatsapp_number' => ['required', 'string', 'max:20'],
-        ]);
-
-        $this->seller()->update($data);
-
-        return back()->with('success', 'Profile updated successfully.');
-    }
+    // ── Users ─────────────────────────────────────────────────────────────────
 
     public function users(Request $request)
     {
-        if (! session('coin_seller_id')) return redirect()->route('coin_seller.login');
+        if (! session('coin_seller_id') || ! session('coin_seller_token')) {
+            return redirect()->route('coin_seller.login');
+        }
         $seller = $this->seller();
         $search = $request->get('search');
+
+        // Convert display ID (100014) to real ID (14)
         $realId = null;
-        if ($search && is_numeric($search))
+        if ($search && is_numeric($search)) {
             $realId = (int)$search > 100000 ? (int)$search - 100000 : (int)$search;
+        }
 
         $users = User::whereNotIn('role', ['admin', 'super_admin', 'moderator'])
-            ->when($search, fn($q) => $realId
-                ? $q->where('id', $realId)
-                : $q->where('username', 'like', "%$search%"))
+            ->when($search, function ($q) use ($search, $realId) {
+                if ($realId) {
+                    $q->where('id', $realId);
+                } else {
+                    $q->where('username', 'like', "%$search%");
+                }
+            })
             ->orderByDesc('created_at')
             ->paginate(20);
 
@@ -99,15 +127,23 @@ class CoinSellerPortalController extends Controller
     public function addCoins(Request $request, int $userId)
     {
         $seller = $this->seller();
-        $data   = $request->validate(['coins' => ['required','integer','min:1'], 'note' => ['nullable','string','max:255']]);
 
-        if ($seller->coin_balance < $data['coins'])
+        $data = $request->validate([
+            'coins' => ['required', 'integer', 'min:1'],
+            'note'  => ['nullable', 'string', 'max:255'],
+        ]);
+
+        if ($seller->coin_balance < $data['coins']) {
             return back()->withErrors(['coins' => 'Insufficient coin balance.']);
+        }
 
         $user = User::findOrFail($userId);
+
+        // Deduct from seller, credit to user
         $seller->decrement('coin_balance', $data['coins']);
         $seller->increment('total_sold',   $data['coins']);
         $user->increment('coin_balance',   $data['coins']);
+        $user->refresh();
 
         CoinSellerTransaction::create([
             'coin_seller_id' => $seller->id,
@@ -117,16 +153,47 @@ class CoinSellerPortalController extends Controller
             'note'           => $data['note'] ?? null,
         ]);
 
+        // Also record in CoinTransaction so user sees it in recharge history
+        \App\Models\CoinTransaction::create([
+            'user_id'      => $userId,
+            'type'         => 'recharge',
+            'amount'       => $data['coins'],
+            'balance_after'=> $user->coin_balance,
+            'reference'    => "coin_seller:{$seller->id}:" . ($data['note'] ?? 'purchase'),
+        ]);
+
         return back()->with('success', "✓ Added {$data['coins']} coins to {$user->username}.");
+    }
+
+    // ── Transactions ──────────────────────────────────────────────────────────
+
+    public function updateProfile(Request $request)
+    {
+        $seller = $this->seller();
+
+        $data = $request->validate([
+            'whatsapp_number' => ['nullable', 'string', 'max:20'],
+            'coin_sell_value' => ['nullable', 'numeric', 'min:0'],
+            'display_name'    => ['nullable', 'string', 'max:100'],
+        ]);
+
+        $seller->update(array_filter($data, fn($v) => $v !== null));
+
+        return back()->with('success', 'Profile updated successfully.');
     }
 
     public function transactions(Request $request)
     {
-        if (! session('coin_seller_id')) return redirect()->route('coin_seller.login');
-        $seller       = $this->seller();
+        if (! session('coin_seller_id') || ! session('coin_seller_token')) {
+            return redirect()->route('coin_seller.login');
+        }
+        $seller = $this->seller();
+
         $transactions = CoinSellerTransaction::where('coin_seller_id', $seller->id)
             ->with('user:id,username,avatar_url')
-            ->latest()->paginate(20);
+            ->latest()
+            ->paginate(20);
+
         return view('coin_seller.transactions', compact('seller', 'transactions'));
     }
 }

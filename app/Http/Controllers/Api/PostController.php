@@ -14,27 +14,26 @@ use Illuminate\Support\Facades\Storage;
 
 class PostController extends Controller
 {
-    /** GET /posts — paginated newsfeed */
+    /** GET /posts?page=N — paginated newsfeed, latest first, ALL posts */
     public function index(Request $request): JsonResponse
     {
         $userId = auth()->id();
+        $page   = max(1, (int) $request->input('page', 1));
 
         $posts = Post::with([
                 'user:id,username,display_name,avatar_url,is_verified,level',
                 'comments.user:id,username,avatar_url',
             ])
-            ->latest()
-            ->paginate(10);
+            ->orderByDesc('created_at')   // latest first, no date filter
+            ->paginate(20, ['*'], 'page', $page);
 
-        $data = $posts->map(function (Post $post) use ($userId) {
-            return $this->formatPost($post, $userId);
-        });
+        $data = $posts->map(fn (Post $post) => $this->formatPost($post, $userId));
 
         return response()->json([
-            'data'          => $data,
-            'current_page'  => $posts->currentPage(),
-            'last_page'     => $posts->lastPage(),
-            'has_more'      => $posts->hasMorePages(),
+            'data'         => $data,
+            'current_page' => $posts->currentPage(),
+            'last_page'    => $posts->lastPage(),
+            'has_more'     => $posts->hasMorePages(),
         ]);
     }
 
@@ -50,10 +49,8 @@ class PostController extends Controller
             ->latest()
             ->paginate(12);
 
-        $data = $posts->map(fn($p) => $this->formatPost($p, $authId));
-
         return response()->json([
-            'data'     => $data,
+            'data'     => $posts->map(fn ($p) => $this->formatPost($p, $authId)),
             'has_more' => $posts->hasMorePages(),
         ]);
     }
@@ -90,7 +87,6 @@ class PostController extends Controller
             ->firstOrFail();
 
         $post->delete();
-
         return response()->json(['message' => 'Post deleted.']);
     }
 
@@ -195,7 +191,7 @@ class PostController extends Controller
                 'is_verified'  => $post->user->is_verified,
                 'level'        => $post->user->level,
             ] : null,
-            'preview_comments' => $post->comments->map(fn($c) => [
+            'preview_comments' => $post->comments->map(fn ($c) => [
                 'id'       => $c->id,
                 'body'     => $c->body,
                 'username' => $c->user?->username,

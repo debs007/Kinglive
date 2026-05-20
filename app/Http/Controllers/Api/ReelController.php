@@ -18,53 +18,21 @@ class ReelController extends Controller
 {
     private const DIAMONDS_PER_VIEW = 5;
 
-    // ── 1. Feed — most viewed first ───────────────────────────────────────────
+    // ── 1. Feed — latest first, all reels ────────────────────────────────────
 
     public function feed(Request $request): JsonResponse
     {
         $authId = auth()->id();
+        $page   = max(1, (int) $request->input('page', 1));
 
-        $threeDaysAgo = now()->subDays(3);
-
-        // Last 3 days — highest views first
-        $recent = Reel::with('user:id,username,display_name,avatar_url,is_verified')
+        $reels = Reel::with('user:id,username,display_name,avatar_url,is_verified')
             ->where('is_active', true)
-            ->where('created_at', '>=', $threeDaysAgo)
-            ->orderByDesc('view_count')
             ->orderByDesc('created_at')
-            ->paginate(10);
-
-        // If recent has enough, return it directly
-        if ($recent->total() >= 10 || $request->page > 1) {
-            $reels = Reel::with('user:id,username,display_name,avatar_url,is_verified')
-                ->where('is_active', true)
-                ->where('created_at', '>=', $threeDaysAgo)
-                ->orderByDesc('view_count')
-                ->orderByDesc('created_at')
-                ->paginate(10);
-
-            if ($reels->isEmpty() && $request->page > 1) {
-                // Fall through to older reels
-                $offset = ($request->page - 1) * 10 - $recent->total();
-                $reels  = Reel::with('user:id,username,display_name,avatar_url,is_verified')
-                    ->where('is_active', true)
-                    ->where('created_at', '<', $threeDaysAgo)
-                    ->orderByDesc('view_count')
-                    ->paginate(10, ['*'], 'page', max(1, (int) ceil($offset / 10)));
-            }
-        } else {
-            // Not enough recent — show recent + older sorted by views
-            $reels = Reel::with('user:id,username,display_name,avatar_url,is_verified')
-                ->where('is_active', true)
-                ->orderByDesc(\DB::raw("CASE WHEN created_at >= '{$threeDaysAgo}' THEN 1 ELSE 0 END"))
-                ->orderByDesc('view_count')
-                ->orderByDesc('created_at')
-                ->paginate(10);
-        }
+            ->paginate(15, ['*'], 'page', $page);
 
         return response()->json([
-            'data'     => $reels->map(fn (\$r) => \$r->toFeedArray(\$authId)),
-            'has_more' => \$reels->hasMorePages(),
+            'data'     => $reels->map(fn ($r) => $r->toFeedArray($authId)),
+            'has_more' => $reels->hasMorePages(),
         ]);
     }
 

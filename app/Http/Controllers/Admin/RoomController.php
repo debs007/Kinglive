@@ -59,4 +59,37 @@ class RoomController extends Controller
 
         return back()->with('success', "Stream \"{$room->title}\" ended.");
     }
+
+    /**
+     * Admin force-off a live room.
+     * Pushes a broadcast via Redis so Swoole picks it up on next ping tick.
+     * Works cross-process (PHP-FPM → Redis → Swoole).
+     */
+    public function forceOff(string $roomId): \Illuminate\Http\JsonResponse
+    {
+        $room = \App\Models\Room::where('id', $roomId)
+            ->where('status', 'live')
+            ->firstOrFail();
+
+        // Push to Redis broadcast queue — Swoole polls this on every ping
+        $payload = json_encode([
+            'type'    => 'room.admin_off',
+            'room_id' => $roomId,
+            'message' => 'This stream has been stopped by an administrator.',
+        ]);
+
+        Redis::lpush('ws:pending_broadcasts', json_encode([
+            'rooms'   => [$roomId],
+            'payload' => $payload,
+            'expires' => time() + 30,
+        ]));
+
+        // Also mark ended immediately in DB (Swoole will also do this but belt & suspenders)
+        $room->update(['status' => 'ended', 'ended_at' => now()]);
+
+        return response()->json([
+            'success' => true,
+            'message' => "Room {$roomId} force-stopped. Broadcast queued for active viewers.",
+        ]);
+    }
 }

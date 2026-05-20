@@ -1,13 +1,11 @@
 @extends('admin.layouts.app')
 @section('title', 'Live Rooms')
 @section('breadcrumb', 'Live › Rooms')
-
 @section('content')
 <div class="page-header">
     <h2>Live Rooms</h2>
     <span class="live-badge" id="liveCount">● {{ $liveCount }} LIVE</span>
 </div>
-
 <div class="card">
     <div class="card-header">
         <h3>Rooms</h3>
@@ -25,14 +23,13 @@
             <button type="submit" class="btn-primary">Filter</button>
         </form>
     </div>
-
     <table class="admin-table">
         <thead>
             <tr><th>Host</th><th>Title</th><th>Type</th><th>Viewers</th><th>Gifts</th><th>Duration</th><th>Actions</th></tr>
         </thead>
         <tbody>
             @forelse($rooms as $room)
-            <tr>
+            <tr id="room-row-{{ $room->id }}">
                 <td>
                     <div class="user-cell">
                         <img src="{{ $room->host->avatar_url }}" class="avatar-sm" alt="">
@@ -53,6 +50,14 @@
                             @csrf
                             <button class="btn-sm btn-danger">End</button>
                         </form>
+                        {{-- Force Off — sends room.admin_off via WS to all viewers --}}
+                        <button
+                            id="forceoff-{{ $room->id }}"
+                            onclick="forceOff('{{ $room->id }}', '{{ addslashes($room->host->username) }}')"
+                            class="btn-sm btn-danger"
+                            style="background:#7d0000">
+                            🚫 Force Off
+                        </button>
                         @endif
                     </div>
                 </td>
@@ -65,12 +70,51 @@
     <div style="margin-top:16px">{{ $rooms->withQueryString()->links() }}</div>
 </div>
 @endsection
+
 @push('scripts')
 <script>
-setInterval(()=>{
-    fetch('{{ route('admin.api.live-rooms') }}').then(r=>r.json()).then(d=>{
-        document.getElementById('liveCount').textContent=`● ${d.count} LIVE`;
+// Auto-refresh live count every 20s
+setInterval(() => {
+    fetch('{{ route('admin.api.live-rooms') }}').then(r => r.json()).then(d => {
+        document.getElementById('liveCount').textContent = `● ${d.count} LIVE`;
     });
-},20000);
+}, 20000);
+
+// Force Off — pushes room.admin_off via Redis → Swoole broadcasts to all viewers
+async function forceOff(roomId, username) {
+    if (!confirm(`Force stop ${username}'s stream?\n\nAll viewers and the host will immediately see a "stopped by administrator" message.`)) return;
+
+    const btn = document.getElementById('forceoff-' + roomId);
+    btn.disabled = true;
+    btn.textContent = 'Stopping…';
+
+    try {
+        const res = await fetch(`/admin/rooms/${roomId}/force-off`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '{{ csrf_token() }}'
+            }
+        });
+        const data = await res.json();
+        if (data.success) {
+            btn.textContent = '✅ Stopped';
+            btn.style.background = 'var(--success)';
+            // Fade out the row
+            const row = document.getElementById('room-row-' + roomId);
+            if (row) {
+                row.style.transition = 'opacity 1s';
+                setTimeout(() => row.style.opacity = '0.35', 800);
+            }
+        } else {
+            btn.textContent = '❌ ' + (data.message ?? 'Failed');
+            btn.style.background = 'var(--warning)';
+            btn.disabled = false;
+        }
+    } catch (e) {
+        btn.textContent = '❌ Error';
+        btn.disabled = false;
+    }
+}
 </script>
 @endpush

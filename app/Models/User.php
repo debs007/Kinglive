@@ -141,6 +141,27 @@ class User extends Authenticatable implements JWTSubject
             ->first();
     }
 
+    /**
+     * Calculate this month's total live minutes (video + audio combined).
+     * Computed from rooms table so it's always accurate.
+     */
+    public function getMonthLiveMinutes(): int
+    {
+        return (int) \App\Models\Room::where('host_user_id', $this->id)
+            ->whereIn('status', ['ended', 'live']) // include currently live rooms
+            ->whereYear('started_at',  now()->year)
+            ->whereMonth('started_at', now()->month)
+            ->get(['started_at', 'ended_at', 'updated_at', 'status'])
+            ->sum(function ($room) {
+                $start = $room->started_at;
+                // For live rooms use current time, for ended use ended_at
+                $end   = $room->status === 'live'
+                    ? now()
+                    : ($room->ended_at ?? $room->updated_at);
+                return ($start && $end) ? $start->diffInMinutes($end) : 0;
+            });
+    }
+
     public function toProfileArray(): array
     {
         return [
@@ -163,7 +184,7 @@ class User extends Authenticatable implements JWTSubject
             'agency_id'       => $this->agency_id,
             'audio_live_days'   => $this->audio_live_days   ?? 0,
             'video_live_days'   => $this->video_live_days   ?? 0,
-            'total_live_minutes'=> $this->total_live_minutes ?? 0,
+            'total_live_minutes'=> $this->getMonthLiveMinutes(), // monthly, not all-time
             'total_live_hours'  => $this->total_live_hours   ?? 0,
         ];
     }

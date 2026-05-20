@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\DailyRewardController;
 use App\Http\Controllers\Api\RoomController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\WalletController;
+use App\Http\Controllers\Api\TransactionController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\MediaController;
 use App\Http\Controllers\Api\NotificationController;
@@ -131,6 +132,8 @@ Route::prefix('v1')->group(function () {
         Route::post  ('wallet/purchase',         [WalletController::class, 'purchaseCoins']);
         Route::post  ('wallet/withdraw',         [WalletController::class, 'requestWithdrawal']);
         Route::get   ('wallet/transactions',     [WalletController::class, 'transactions']);
+        Route::get   ('transactions',            [TransactionController::class, 'index']);
+        Route::get   ('my-lives',               [\App\Http\Controllers\Api\MyLivesController::class, 'index']);
         Route::get   ('wallet/withdrawals',      [WalletController::class, 'withdrawalHistory']);
         
         // Notifications

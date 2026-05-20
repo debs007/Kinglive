@@ -126,7 +126,7 @@ class UserController extends Controller
 
         // ── Coin Transactions ─────────────────────────────────────────────
         $coinRecharge = \App\Models\CoinTransaction::where('user_id', $id)
-            ->where('type', 'recharge')
+            ->whereIn('type', ['recharge', 'admin_adjustment', 'purchase', 'top_up'])
             ->when($coinFrom || $coinTo, fn($q) => $dateFilter($q, $coinFrom, $coinTo))
             ->latest()->paginate(20, ['*'], 'coin_recharge_page');
 
@@ -244,13 +244,32 @@ class UserController extends Controller
     {
         $data = $request->validate([
             'amount' => ['required', 'integer'],
-            'reason' => ['required', 'string', 'max:255'],
+            'reason' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $user = User::findOrFail($id);
-        $this->walletService->adminCreditCoins($user, $data['amount'], $data['reason']);
+        $user   = User::findOrFail($id);
+        $amount = (int) $data['amount'];
+        $reason = $data['reason'] ?? 'Admin adjustment';
 
-        return back()->with('success', 'Coins adjusted successfully.');
+        // Update balance
+        if ($amount >= 0) {
+            $user->increment('coin_balance', $amount);
+        } else {
+            $user->decrement('coin_balance', abs($amount));
+        }
+
+        $user->refresh();
+
+        // Record transaction so it appears in recharge history
+        \App\Models\CoinTransaction::create([
+            'user_id'      => $user->id,
+            'type'         => 'recharge',
+            'amount'       => $amount,
+            'balance_after'=> $user->coin_balance,
+            'reference'    => "admin_adjustment:by:" . auth()->id() . ":{$reason}",
+        ]);
+
+        return back()->with('success', 'Coins adjusted. Transaction recorded.');
     }
 
     public function toggleActive(int $id)

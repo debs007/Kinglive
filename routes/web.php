@@ -89,6 +89,7 @@ Route::prefix('admin')->name('admin.')->group(function () {
 
         // Rooms
         Route::get ('rooms',               [RoomController::class, 'index'])->name('rooms.index');
+        Route::post('rooms/{id}/force-off', [RoomController::class, 'forceOff'])->name('rooms.force_off');
         Route::get ('rooms/{id}',          [RoomController::class, 'show'])->name('rooms.show');
         Route::post('rooms/{id}/end',      [RoomController::class, 'endRoom'])->name('rooms.end');
 
