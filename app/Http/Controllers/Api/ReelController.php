@@ -18,21 +18,120 @@ class ReelController extends Controller
 {
     private const DIAMONDS_PER_VIEW = 5;
 
-    // ── 1. Feed — latest first, all reels ────────────────────────────────────
+    // ── 1. Feed — randomised, no repeats per session, latest-weighted ───────
+    //
+    // How it works:
+    //  • Client generates a session_token (UUID) on first open of reels page
+    //  • Server stores seen reel IDs in Redis under that token (TTL 2h)
+    //  • Each request: fetch a pool of unseen reels, weighted toward latest,
+    //    shuffle within weight bands, return 10, mark as seen
+    //  • When all reels seen → clear the session so they start fresh
+    //  • Client resets token when user navigates away and comes back
 
     public function feed(Request $request): JsonResponse
     {
-        $authId = auth()->id();
-        $page   = max(1, (int) $request->input('page', 1));
+        $authId  = auth()->id();
+        $token   = $request->input('session_token'); // UUID from client
+        $perPage = 10;
 
-        $reels = Reel::with('user:id,username,display_name,avatar_url,is_verified')
+        // If no session token, just return latest
+        if (! $token) {
+            $reels = Reel::with('user:id,username,display_name,avatar_url,is_verified')
+                ->where('is_active', true)
+                ->orderByDesc('created_at')
+                ->limit($perPage)
+                ->get();
+
+            return response()->json([
+                'data'     => $reels->map(fn ($r) => $r->toFeedArray($authId)),
+                'has_more' => true,
+            ]);
+        }
+
+        $seenKey = "reels:seen:{$token}";
+
+        // Get already-seen IDs from Redis
+        $seenIds = \Illuminate\Support\Facades\Redis::smembers($seenKey);
+        $seenIds = array_map('intval', $seenIds);
+
+        // Total available reels
+        $totalReels = Reel::where('is_active', true)->count();
+
+        // If all seen, clear session so they start fresh
+        if (count($seenIds) >= $totalReels) {
+            \Illuminate\Support\Facades\Redis::del($seenKey);
+            $seenIds = [];
+        }
+
+        // ── Weighted pool strategy ────────────────────────────────────────
+        // Split reels into 3 bands by age, pick from each proportionally:
+        //   60% from last 7 days (newest)
+        //   25% from last 30 days
+        //   15% from older
+        // Within each band, shuffle randomly for variety
+
+        $now          = now();
+        $sevenDaysAgo  = $now->copy()->subDays(7);
+        $thirtyDaysAgo = $now->copy()->subDays(30);
+
+        $base = Reel::with('user:id,username,display_name,avatar_url,is_verified')
             ->where('is_active', true)
-            ->orderByDesc('created_at')
-            ->paginate(15, ['*'], 'page', $page);
+            ->when(! empty($seenIds), fn ($q) => $q->whereNotIn('id', $seenIds));
+
+        // Band A: last 7 days — 6 reels
+        $bandA = (clone $base)
+            ->where('created_at', '>=', $sevenDaysAgo)
+            ->inRandomOrder()
+            ->limit(6)
+            ->get();
+
+        // Band B: 8–30 days — 3 reels (exclude already picked)
+        $pickedIds = $bandA->pluck('id')->toArray();
+        $bandB = (clone $base)
+            ->where('created_at', '<', $sevenDaysAgo)
+            ->where('created_at', '>=', $thirtyDaysAgo)
+            ->whereNotIn('id', $pickedIds)
+            ->inRandomOrder()
+            ->limit(3)
+            ->get();
+
+        // Band C: older — 1 reel (fill rest)
+        $pickedIds = array_merge($pickedIds, $bandB->pluck('id')->toArray());
+        $bandC = (clone $base)
+            ->where('created_at', '<', $thirtyDaysAgo)
+            ->whereNotIn('id', $pickedIds)
+            ->inRandomOrder()
+            ->limit(1)
+            ->get();
+
+        $batch = $bandA->concat($bandB)->concat($bandC)->shuffle();
+
+        // If bands didn't fill 10, top up from any unseen
+        if ($batch->count() < $perPage) {
+            $allPicked = $batch->pluck('id')->toArray();
+            $topUp = Reel::with('user:id,username,display_name,avatar_url,is_verified')
+                ->where('is_active', true)
+                ->when(! empty($seenIds), fn ($q) => $q->whereNotIn('id', $seenIds))
+                ->whereNotIn('id', $allPicked)
+                ->inRandomOrder()
+                ->limit($perPage - $batch->count())
+                ->get();
+            $batch = $batch->concat($topUp)->shuffle();
+        }
+
+        // Mark these as seen in Redis (TTL 2 hours — resets when user leaves page)
+        if ($batch->isNotEmpty()) {
+            $newIds = $batch->pluck('id')->toArray();
+            \Illuminate\Support\Facades\Redis::sadd($seenKey, ...$newIds);
+            \Illuminate\Support\Facades\Redis::expire($seenKey, 7200); // 2 hours
+        }
+
+        $seenAfter = count($seenIds) + $batch->count();
+        $hasMore   = $seenAfter < $totalReels;
 
         return response()->json([
-            'data'     => $reels->map(fn ($r) => $r->toFeedArray($authId)),
-            'has_more' => $reels->hasMorePages(),
+            'data'     => $batch->map(fn ($r) => $r->toFeedArray($authId)),
+            'has_more' => $hasMore,
         ]);
     }
 

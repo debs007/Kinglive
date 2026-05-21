@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\DmConversation;
+use App\Services\NotificationService;
 use App\Models\DmMessage;
 use App\Models\Gift;
 use App\Models\User;
@@ -46,13 +47,13 @@ class DirectMessageController extends Controller
                 ],
                 'last_message' => $last ? [
                     'type'       => $last->type,
-                    'body' => match($last->type) {
-                            'text'  => $last->body,
-                            'image' => '📷 Image',
-                            'voice' => '🎤 Voice message',
-                            'gift'  => '🎁 Gift',
-                            default => $last->body,
-                        },
+                    'body'       => match($last->type) {
+                                       'text'  => $last->body,
+                                       'image' => '📷 Image',
+                                       'voice' => '🎤 Voice message',
+                                       'gift'  => '🎁 Gift',
+                                       default => $last->body,
+                                   },
                     'sender_id'  => $last->sender_id,
                     'created_at' => $last->created_at?->toIso8601String(),
                 ] : null,
@@ -292,6 +293,19 @@ class DirectMessageController extends Controller
         $receiverId = $conv->user_one_id === $myId ? $conv->user_two_id : $conv->user_one_id;
         $this->_pushWsToReceiver($receiverId, $message->toArray());
 
+        // Push notification (for when receiver's app is backgrounded/closed)
+        $sender = auth()->user();
+        app(NotificationService::class)->sendToUser(
+            userId: $receiverId,
+            title:  $sender->display_name ?? $sender->username,
+            body:   $type === 'text' ? $body : '📷 Sent you a message',
+            data:   [
+                'type'            => 'dm_message',
+                'conversation_id' => (string) $conversationId,
+                'sender_id'       => (string) $myId,
+            ]
+        );
+
         return response()->json(['message' => $message->toArray()]);
     }
 
@@ -305,62 +319,5 @@ class DirectMessageController extends Controller
             'last_message_at' => now(),
             $unreadCol        => DB::raw("{$unreadCol} + 1"),
         ]);
-    }
-    
-    public function voiceUploadUrl(Request $request): JsonResponse
-    {
-        $key = 'dm/voice/' . \Illuminate\Support\Str::random(16) . '.aac';
- 
-        $client = new \Aws\S3\S3Client([
-            'version'     => 'latest',
-            'region'      => config('filesystems.disks.s3.region'),
-            'credentials' => [
-                'key'    => config('filesystems.disks.s3.key'),
-                'secret' => config('filesystems.disks.s3.secret'),
-            ],
-        ]);
- 
-        $command   = $client->getCommand('PutObject', [
-            'Bucket' => config('filesystems.disks.s3.bucket'),
-            'Key'    => $key,
-        ]);
-        $presigned = $client->createPresignedRequest($command, '+15 minutes');
- 
-        return response()->json([
-            'upload_url' => (string) $presigned->getUri(),
-            'cdn_url'    => \Illuminate\Support\Facades\Storage::disk('s3')->url($key),
-            'file_url'   => \Illuminate\Support\Facades\Storage::disk('s3')->url($key),
-        ]);
-    }
- 
-    public function sendVoice(Request $request, int $conversationId): JsonResponse
-    {
-        $data = $request->validate([
-            'voice_url' => ['required', 'string'],
-            'duration'  => ['required', 'integer', 'min:1', 'max:300'],
-        ]);
- 
-        $myId = auth()->id();
-        $conv = DmConversation::findOrFail($conversationId);
- 
-        if ($conv->user_one_id !== $myId && $conv->user_two_id !== $myId) {
-            return response()->json(['message' => 'Unauthorized'], 403);
-        }
- 
-        $message = DmMessage::create([
-            'conversation_id' => $conversationId,
-            'sender_id'       => $myId,
-            'type'            => 'voice',
-            'body'            => $data['voice_url'],
-            'voice_duration'  => $data['duration'],
-            'is_read'         => false,
-        ]);
- 
-        $this->_updateConversation($conv, $message, $myId);
- 
-        $receiverId = $conv->user_one_id === $myId ? $conv->user_two_id : $conv->user_one_id;
-        $this->_pushWsToReceiver($receiverId, $message->toArray());
- 
-        return response()->json(['message' => $message->toArray()]);
     }
 }
