@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
 
 /**
@@ -92,12 +93,6 @@ class BaishunGameController extends Controller
         $code = md5(time() . $uid);
         Cache::put('baishun_code_' . $code, $uid, 3600);
 
-        // Game list (filter active only)
-        // $games = array_values(array_filter(
-        //     self::GAME_LIST,
-        //     fn ($g) => ($g['status'] ?? 0) === 1
-        // ));
-        
         $games = Cache::remember('baishun_games', 60, function () {
             return \App\Models\Game::active()
                 ->get()
@@ -118,7 +113,7 @@ class BaishunGameController extends Controller
             'userId'     => (string) $uid,
             'code'       => $code,
             'roomId'     => (int) $roomId,
-            'gameMode'   => 2, // 2 = half screen
+            'gameMode'   => 2,
             'language'   => 2,
             'gameConfig' => [
                 'sceneMode'    => 0,
@@ -133,123 +128,54 @@ class BaishunGameController extends Controller
 
     // ── 2. Flutter → us: exchange code for ss_token ───────────────────────────
 
-    // public function getSsToken(Request $request): JsonResponse
-    // {
-    //      Log::info("raw request sstoken", [
-    //         'data' => $request->all()
-    //     ]);
-        
-    //     $code = $request->query('code', '');
-    //     $uid  = Cache::get('baishun_code_' . $code);
-
-    //     if (! $uid) {
-    //         return response()->json(['error' => 'Invalid or expired code'], 400);
-    //     }
-
-    //     $nonce     = bin2hex(random_bytes(8));
-    //     $timestamp = time();
-    //     $sign      = md5($nonce . self::APP_KEY . $timestamp);
-
-    //     $response = Http::withHeaders([
-    //         'Content-Type' => 'application/json',
-    //         'app-channel'  => self::APP_CHANNEL,
-    //         'app-id'       => self::APP_ID,
-    //     ])->post(self::BASE_URL . '/api/v1/get_sstoken', [
-    //         'app_id'           => (int) self::APP_ID,
-    //         'user_id'          => (string) $uid,
-    //         'code'             => $code,
-    //         'signature'        => $sign,
-    //         'signature_nonce'  => $nonce,
-    //         'timestamp'        => $timestamp,
-    //     ]);
-
-    //     if (! $response->successful()) {
-    //         Log::info('BAISHUN RAW RESPONSE', [
-    //             'status' => $response->status(),
-    //             'body'   => $response->body(),
-    //         ]);
-    //         return response()->json(['error' => "Baishun error"], 500);
-    //     }
-
-    //     $data = $response->json();
-    //     if (($data['code'] ?? -1) !== 0) {
-    //         return response()->json(['error' => $data['message'] ?? 'Error from BaishunGame'], 500);
-    //     }
-
-    //     return response()->json($data['data']);
-    // }
-    
     public function getSsToken(Request $request): JsonResponse
     {
         Log::info("raw request sstoken", [
-            'raw' => $request->getContent(),
+            'raw'  => $request->getContent(),
             'json' => $request->json()->all(),
         ]);
-    
-        // ✅ Parse JSON body
-        // $code = data_get($request->json()->all(), 'data.code');
-        // $uid  = data_get($request->json()->all(), 'data.user_id');
-        
-        $payload = $request->json()->all();
 
-        $code = $payload['code'] ?? null;
-        $uid  = $payload['user_id'] ?? null;
-    
+        $payload = $request->json()->all();
+        $code    = $payload['code']    ?? null;
+        $uid     = $payload['user_id'] ?? null;
+
         if (! $code || ! $uid) {
-            Log::info("raw request _1", [
-                'code' => 1001,
-                'message' => 'Invalid payload'
-            ]);
-            return response()->json([
-                'code' => 1001,
-                'message' => 'Invalid payload'
-            ]);
+            Log::info("raw request _1", ['code' => 1001, 'message' => 'Invalid payload']);
+            return response()->json(['code' => 1001, 'message' => 'Invalid payload']);
         }
-    
-        // ✅ Check cache
+
         $cachedUid = Cache::get('baishun_code_' . $code);
-    
+
         if (! $cachedUid) {
-            
-            Log::info("raw request _2", [
-                'code' => 1001,
-                'message' => 'code invalid'
-            ]);
-            return response()->json([
-                'code' => 1001,
-                'message' => 'code invalid'
-            ]);
+            Log::info("raw request _2", ['code' => 1001, 'message' => 'code invalid']);
+            return response()->json(['code' => 1001, 'message' => 'code invalid']);
         }
-    
+
         Cache::forget('baishun_code_' . $code);
-    
-        // ✅ Generate token
-        $ssToken = \Tymon\JWTAuth\Facades\JWTAuth::fromUser(
+
+        $ssToken    = \Tymon\JWTAuth\Facades\JWTAuth::fromUser(
             \App\Models\User::find($cachedUid),
             ['site' => $request->getHost()]
         );
-    
         $expireDate = (time() + config('jwt.ttl')) * 1000;
-    
+
         return response()->json([
-            'code' => 0,
+            'code'    => 0,
             'message' => 'succeed',
-            'data' => [
+            'data'    => [
                 'ss_token'    => $ssToken,
                 'expire_date' => $expireDate,
-            ]
+            ],
         ]);
     }
-        
-        private function generateSsToken($uid): string
-        {
-            return \Tymon\JWTAuth\Facades\JWTAuth::fromUser(
-                \App\Models\User::find($uid),
-                [
-                    'site' => request()->getHost()
-                ]
-            );
-        }
+
+    private function generateSsToken($uid): string
+    {
+        return \Tymon\JWTAuth\Facades\JWTAuth::fromUser(
+            \App\Models\User::find($uid),
+            ['site' => request()->getHost()]
+        );
+    }
 
     // ── 3. BaishunGame → us: verify signature ────────────────────────────────
 
@@ -263,12 +189,8 @@ class BaishunGameController extends Controller
 
     public function getUserInfo(Request $request): JsonResponse
     {
-        // if (! $this->checkSign($request->all())) {
-        //     return response()->json(['code' => 1003, 'message' => 'Sign error']);
-        // }
-        Log::info("raw request", [
-            'data' => $request->all()
-        ]);
+        Log::info("raw request", ['data' => $request->all()]);
+
         $userId = $request->input('user_id');
         $user   = User::find((int) $userId);
 
@@ -285,7 +207,7 @@ class BaishunGameController extends Controller
                 'user_avatar' => $user->avatar_url   ?? '',
                 'balance'     => (float) $user->coin_balance,
             ],
-            'unique_id' => strval(time().rand(10000,99999)),
+            'unique_id' => strval(time() . rand(10000, 99999)),
         ]);
     }
 
@@ -309,9 +231,10 @@ class BaishunGameController extends Controller
         if (Cache::has($cacheKey)) {
             $balance = User::find((int) $userId)?->coin_balance ?? 0;
             return response()->json([
-                'code' => 0, 'message' => 'succeed',
-                'data' => ['currency_balance' => (float) $balance],
-                'unique_id' => strval(time().rand(10000,99999)),
+                'code'    => 0,
+                'message' => 'succeed',
+                'data'    => ['currency_balance' => (float) $balance],
+                'unique_id' => strval(time() . rand(10000, 99999)),
             ]);
         }
 
@@ -341,11 +264,39 @@ class BaishunGameController extends Controller
 
             Cache::put($cacheKey, true, now()->addDay());
 
+            // ── Global notification for big wins (≥10000 coins) ──────────────
+            // Pushes to Redis queue — Swoole picks it up on next ping tick
+            // and broadcasts to all users currently inside any live room
+            if ($diff >= 10000) {
+                try {
+                    $winUser  = User::find((int) $userId);
+                    $gameName = \App\Models\Game::where('game_id', $gameId)
+                        ->value('name') ?? 'Game';
+
+                    Redis::lpush('ws:pending_broadcasts', json_encode([
+                        'rooms'   => ['__global__'],
+                        'payload' => json_encode([
+                            'type'          => 'global.notify',
+                            'notify_type'   => 'game_win',
+                            'sender_name'   => $winUser?->display_name
+                                              ?? $winUser?->username
+                                              ?? 'Player',
+                            'sender_avatar' => $winUser?->avatar_url ?? '',
+                            'game_name'     => $gameName,
+                            'amount'        => $diff,
+                        ]),
+                        'expires' => time() + 30,
+                    ]));
+                } catch (\Throwable $e) {
+                    Log::warning("Global notify failed: " . $e->getMessage());
+                }
+            }
+
             return response()->json([
                 'code'    => 0,
                 'message' => 'succeed',
                 'data'    => ['currency_balance' => (float) $newBalance],
-                'unique_id' => strval(time().rand(10000,99999)),
+                'unique_id' => strval(time() . rand(10000, 99999)),
             ]);
 
         } catch (\Exception $e) {
@@ -362,6 +313,10 @@ class BaishunGameController extends Controller
     public function gameReport(Request $request): JsonResponse
     {
         Log::info('BaishunGame report: ' . json_encode($request->all()));
-        return response()->json(['code' => 0, 'message' => 'succeed', 'unique_id' => strval(time().rand(10000,99999))]);
+        return response()->json([
+            'code'      => 0,
+            'message'   => 'succeed',
+            'unique_id' => strval(time() . rand(10000, 99999)),
+        ]);
     }
 }

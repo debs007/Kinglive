@@ -41,22 +41,35 @@ class DmMessage extends Model
 
     public function toArray(): array
     {
+        // For voice messages, decode body JSON to get url and duration separately
+        $body          = $this->body;
+        $voiceDuration = null;
+
+        if ($this->type === 'voice' && is_string($body) && str_starts_with($body, '{')) {
+            $decoded = json_decode($body, true);
+            if (is_array($decoded)) {
+                $body          = $decoded['url']      ?? $body;
+                $voiceDuration = $decoded['duration'] ?? null;
+            }
+        }
+
         return [
-            'id'             => $this->id,
-            'conversation_id'=> $this->conversation_id,
-            'sender_id'      => $this->sender_id,
-            'type'           => $this->type,
-            'body'           => $this->body,
-            'gift'           => $this->gift ? [
+            'id'              => (int) $this->id,
+            'conversation_id' => (int) $this->conversation_id,
+            'sender_id'       => (int) $this->sender_id,
+            'type'            => $this->type              ?? 'text',
+            'body'            => $body,
+            'voice_duration'  => $voiceDuration,
+            'gift'            => $this->gift ? [
                 'id'            => $this->gift->id,
                 'name'          => $this->gift->name,
                 'thumbnail_url' => $this->gift->thumbnail_url,
                 'diamond_value' => $this->gift->diamond_value,
             ] : null,
-            'gift_quantity'  => $this->gift_quantity,
-            'diamond_value'  => $this->diamond_value,
-            'is_read'        => $this->is_read,
-            'created_at'     => $this->created_at?->toIso8601String(),
+            'gift_quantity'  => (int) ($this->gift_quantity ?? 0),
+            'diamond_value'  => (int) ($this->diamond_value ?? 0),
+            'is_read'        => (bool) ($this->is_read ?? false),
+            'created_at'     => ($this->created_at ?? now())->toIso8601String(),
         ];
     }
 }

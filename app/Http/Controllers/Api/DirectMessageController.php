@@ -178,6 +178,55 @@ class DirectMessageController extends Controller
         return $this->_send($conversationId, 'image', $request->image_url);
     }
 
+    // ── 6b. Get presigned URL for voice upload ────────────────────────────────
+
+    public function voiceUploadUrl(Request $request): JsonResponse
+    {
+        $ext = $request->input('ext', 'm4a');
+        $key = 'dm/voice/' . auth()->id() . '_' . uniqid() . '.' . $ext;
+
+        $client = new \Aws\S3\S3Client([
+            'version'     => 'latest',
+            'region'      => config('filesystems.disks.s3.region'),
+            'credentials' => [
+                'key'    => config('filesystems.disks.s3.key'),
+                'secret' => config('filesystems.disks.s3.secret'),
+            ],
+        ]);
+
+        $cmd       = $client->getCommand('PutObject', [
+            'Bucket'      => config('filesystems.disks.s3.bucket'),
+            'Key'         => $key,
+            'ContentType' => 'audio/' . $ext,
+        ]);
+        $presigned = $client->createPresignedRequest($cmd, '+15 minutes');
+
+        return response()->json([
+            'upload_url' => (string) $presigned->getUri(),
+            'audio_url'  => \Illuminate\Support\Facades\Storage::disk('s3')->url($key),
+            'key'        => $key,
+        ]);
+    }
+
+    // ── 6c. Send a voice message ───────────────────────────────────────────────
+
+    public function sendVoice(int $conversationId, Request $request): JsonResponse
+    {
+        $request->validate([
+            'audio_url' => ['required', 'string'],
+            'duration'  => ['nullable', 'integer', 'min:1', 'max:300'],
+        ]);
+
+        $audioUrl = $request->audio_url;
+        $duration = (int) ($request->duration ?? 0);
+
+        // Encode duration into body as JSON so Flutter can parse it
+        // Format: {"url":"...","duration":30}
+        $body = json_encode(['url' => $audioUrl, 'duration' => $duration]);
+
+        return $this->_send($conversationId, 'voice', $body);
+    }
+
     // ── 7. Send a gift message ────────────────────────────────────────────────
 
     public function sendGift(int $conversationId, Request $request): JsonResponse
@@ -298,7 +347,12 @@ class DirectMessageController extends Controller
         app(NotificationService::class)->sendToUser(
             userId: $receiverId,
             title:  $sender->display_name ?? $sender->username,
-            body:   $type === 'text' ? $body : '📷 Sent you a message',
+            body:   match($type) {
+                'text'  => $body,
+                'voice' => '🎤 Sent you a voice message',
+                'image' => '📷 Sent you a photo',
+                default => '💬 Sent you a message',
+            },
             data:   [
                 'type'            => 'dm_message',
                 'conversation_id' => (string) $conversationId,

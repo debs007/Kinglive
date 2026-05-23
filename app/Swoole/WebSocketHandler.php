@@ -326,6 +326,7 @@ class WebSocketHandler
                     'challenger_room'      => $challengerRoom,
                     'target_room'          => $targetRoom,
                     'scores'               => $pkSession['scores'],
+                    'top_gifters'          => $pkSession['top_gifters'] ?? [],
                     'started_at'           => $pkSession['started_at'],
                     'duration'             => $pkSession['duration'],
                     'pk_channel_id'        => null,
@@ -342,6 +343,51 @@ class WebSocketHandler
                     'opponent_uid'         => $opponentUid,
                 ]));
             }
+        }
+    }
+
+    /**
+     * Broadcast a notification to ALL users currently in ANY live room.
+     * Used for global gift/game win announcements.
+     */
+    /**
+     * Called on every ping — removes call participants whose WS dropped
+     * and didn't reconnect within 30 seconds.
+     */
+    private static function cleanupDroppedParticipants(Server $server, int $fd, array $conn): void
+    {
+        $roomId = $conn['room_id'] ?? null;
+        if (! $roomId) return;
+
+        $allParticipants = Redis::hgetall("call:{$roomId}:participants") ?: [];
+        foreach ($allParticipants as $userId => $json) {
+            $entry = json_decode($json, true) ?? [];
+            if (empty($entry['ws_disconnected'])) continue;
+
+            // Check if the 30s TTL key still exists
+            $ttlKey = "call:disconnected:{$roomId}:{$userId}";
+            if (! Redis::exists($ttlKey)) {
+                // TTL expired — they didn't reconnect, remove them
+                Redis::hdel("call:{$roomId}:participants", $userId);
+                if (Redis::hlen("call:{$roomId}:participants") <= 1) {
+                    Redis::del("call:{$roomId}:participants");
+                }
+                static::broadcastToRoom($server, $roomId, [
+                    'type'    => 'call.left',
+                    'user_id' => $userId,
+                ]);
+            }
+        }
+    }
+
+    private static function broadcastGlobal(Server $server, array $payload): void
+    {
+        $json = json_encode($payload);
+        foreach ($server->connections as $fd) {
+            if (! $server->isEstablished($fd)) continue;
+            $conn = static::$connections[$fd] ?? null;
+            if (! $conn || empty($conn['room_id'])) continue; // only in-room users
+            try { $server->push($fd, $json); } catch (\Throwable) {}
         }
     }
 
@@ -382,17 +428,18 @@ class WebSocketHandler
 
         Redis::del("room:{$roomId}:user_pending:{$conn['user_id']}");
 
-        // FIX: Clean up call participants on abrupt disconnect
-        // Handles case where call.leave was never sent (app crash, network drop)
-        // Without this, new joiners see ghost participants in room.state
+        // On WS disconnect: mark participant as ws_disconnected but KEEP in hash
+        // They may still be streaming on Agora — late joiners can still see/hear them
+        // Only fully remove when they explicitly leave call or Agora stream ends
         if (Redis::hexists("call:{$roomId}:participants", $conn['user_id'])) {
-            Redis::hdel("call:{$roomId}:participants", $conn['user_id']);
-        // If no participants left, remove host too
-        if (Redis::hlen("call:{$roomId}:participants") <= 1) {
-            Redis::del("call:{$roomId}:participants");
-        }
+            $existing = json_decode(Redis::hget("call:{$roomId}:participants", $conn['user_id']), true) ?? [];
+            $existing['ws_disconnected'] = true;
+            Redis::hset("call:{$roomId}:participants", $conn['user_id'], json_encode($existing));
+            // Set a TTL on this flag — if they don't reconnect in 30s, remove them
+            Redis::setex("call:disconnected:{$roomId}:{$conn['user_id']}", 30, 1);
+            // Broadcast to existing audience so they know WS is down (audio may continue)
             static::broadcastToRoom($server, $roomId, [
-                'type'    => 'call.left',
+                'type'    => 'call.ws_dropped',
                 'user_id' => $conn['user_id'],
             ]);
         }
@@ -817,8 +864,34 @@ class WebSocketHandler
             'coins'          => $coinValue,
         ]);
 
+        // ── Global notification for big gifts (≥2000 coins) ──────────────────
+        if ($coinValue >= 2000) {
+            $host = \App\Models\User::find($room?->host_user_id);
+            static::broadcastGlobal($server, [
+                'type'          => 'global.notify',
+                'notify_type'   => 'gift',
+                'sender_name'   => $conn['username'],
+                'sender_avatar' => $conn['avatar'],
+                'host_name'     => $host?->username ?? '',
+                'host_avatar'   => $host?->avatar_url ?? '',
+                'gift_name'     => $gift->name ?? '',
+                'gift_thumbnail'=> $gift->thumbnail_url ?? '',
+                'coins'         => $coinValue,
+                'quantity'      => $quantity,
+            ]);
+        }
+
         $pkSessionId = Redis::get("pk:room:{$roomId}");
-        if ($pkSessionId) static::updatePkScore($server, $roomId, $pkSessionId, $coinValue);
+        if ($pkSessionId) {
+            static::updatePkScore($server, $roomId, $pkSessionId, $coinValue);
+            static::updatePkTopGifter(
+                $pkSessionId, $roomId,
+                (int) $conn['user_id'],
+                $conn['username'] ?? '',
+                $conn['avatar']   ?? '',
+                $coinValue
+            );
+        }
     }
 
     // ── PK ────────────────────────────────────────────────────────────────────
@@ -1008,13 +1081,62 @@ class WebSocketHandler
 
         $session                    = json_decode($raw, true);
         $session['scores'][$roomId] = ($session['scores'][$roomId] ?? 0) + $coinValue;
+
+        // Track top gifters per room — keep top 3 by total coins
+        // Sender info is in the connection that triggered the gift
+        // We pass sender info via static::$connections when updatePkScore is called
+        // For now track by userId→{name,avatar,coins}
         $ttl = Redis::ttl("pk:session:{$pkSessionId}");
         if ($ttl <= 0) $ttl = 360;
         Redis::setex("pk:session:{$pkSessionId}", $ttl, json_encode($session));
 
-        $scoreBroadcast = ['type' => 'pk.scores', 'pk_session_id' => $pkSessionId, 'scores' => $session['scores']];
+        $scoreBroadcast = [
+            'type'           => 'pk.scores',
+            'pk_session_id'  => $pkSessionId,
+            'scores'         => $session['scores'],
+            'top_gifters'    => $session['top_gifters'] ?? [],
+        ];
         static::broadcastToRoom($server, $session['challenger_room'], $scoreBroadcast, crossBroadcast: false);
         static::broadcastToRoom($server, $session['target_room'], $scoreBroadcast, crossBroadcast: false);
+    }
+
+    private static function updatePkTopGifter(
+        string $pkSessionId, string $roomId,
+        int $userId, string $username, string $avatar, int $coins
+    ): void {
+        $raw = Redis::get("pk:session:{$pkSessionId}");
+        if (! $raw) return;
+
+        $session  = json_decode($raw, true);
+        $gifters  = $session['top_gifters'][$roomId] ?? [];
+
+        // Find existing entry for this user
+        $found = false;
+        foreach ($gifters as &$g) {
+            if ($g['user_id'] == $userId) {
+                $g['coins'] += $coins;
+                $found = true;
+                break;
+            }
+        }
+        unset($g);
+
+        if (! $found) {
+            $gifters[] = [
+                'user_id' => $userId,
+                'username'=> $username,
+                'avatar'  => $avatar,
+                'coins'   => $coins,
+            ];
+        }
+
+        // Sort by coins desc, keep top 3
+        usort($gifters, fn($a, $b) => $b['coins'] - $a['coins']);
+        $session['top_gifters'][$roomId] = array_slice($gifters, 0, 3);
+
+        $ttl = Redis::ttl("pk:session:{$pkSessionId}");
+        if ($ttl <= 0) $ttl = 360;
+        Redis::setex("pk:session:{$pkSessionId}", $ttl, json_encode($session));
     }
 
     // ── Game Events ───────────────────────────────────────────────────────────
@@ -1081,6 +1203,7 @@ class WebSocketHandler
     {
         $server->push($fd, json_encode(['type' => 'pong']));
         static::flushPendingBroadcasts($server);
+        static::cleanupDroppedParticipants($server, $fd, $conn);
 
         // Deliver pending DM messages for this user (cross-worker delivery)
         $dmKey = "ws:user:{$conn['user_id']}:dm_pending";
@@ -1109,7 +1232,12 @@ class WebSocketHandler
             $payload = json_decode($item['payload'], true);
 
             foreach ($item['rooms'] as $roomId) {
-                static::broadcastToRoom($server, $roomId, $payload, crossBroadcast: false);
+                if ($roomId === '__global__') {
+                    // Broadcast to all in-room users across all rooms
+                    static::broadcastGlobal($server, $payload);
+                } else {
+                    static::broadcastToRoom($server, $roomId, $payload, crossBroadcast: false);
+                }
             }
 
             // If this is a room shutdown, also end the room in DB
