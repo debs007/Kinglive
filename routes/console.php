@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Schedule;
 Schedule::job(new \App\Jobs\AutoExpireBansJob)->everyFiveMinutes();
 
 Schedule::job(new \App\Jobs\CleanupStaleRoomsJob)->everyMinute();
+Schedule::job(new \App\Jobs\CreditLiveRewardJob)->everyMinute();
 //Schedule::job(new \App\Jobs\NotifyFollowersLiveJob)->everyMinute();
 //Schedule::job(new \App\Jobs\ProcessGiftJob)->everyMinute();
 

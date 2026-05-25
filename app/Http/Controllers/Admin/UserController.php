@@ -225,11 +225,43 @@ class UserController extends Controller
             ->limit(5)
             ->get();
 
+        // ── DM Messages ──────────────────────────────────────────────────
+        $convFilter = $request->input('dm_conv');
+
+        // All conversations this user is part of (for filter dropdown)
+        $dmConversations = \App\Models\DmConversation::where('user_one_id', $id)
+            ->orWhere('user_two_id', $id)
+            ->withCount('messages')
+            ->with(['userOne:id,username', 'userTwo:id,username'])
+            ->orderByDesc('updated_at')
+            ->get()
+            ->map(function ($conv) use ($id) {
+                $conv->otherUser = $conv->user_one_id == $id
+                    ? $conv->userTwo
+                    : $conv->userOne;
+                return $conv;
+            });
+
+        // Messages — filtered by conversation if selected
+        $dmMessages = \App\Models\DmMessage::with([
+                'sender:id,username,avatar_url',
+                'conversation.userOne:id,username',
+                'conversation.userTwo:id,username',
+                'gift:id,name',
+            ])
+            ->whereHas('conversation', function ($q) use ($id) {
+                $q->where('user_one_id', $id)->orWhere('user_two_id', $id);
+            })
+            ->when($convFilter, fn($q) => $q->where('conversation_id', $convFilter))
+            ->orderByDesc('created_at')
+            ->paginate(30, ['*'], 'dm_page');
+
         return view('admin.users.show', compact(
             'user', 'topGifts',
             'coinRecharge', 'coinGifting', 'coinGames',
             'diamondGifts', 'diamondRewards',
-            'pastLives'
+            'pastLives',
+            'dmMessages', 'dmConversations'
         ));
     }
 

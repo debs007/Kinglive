@@ -39,7 +39,7 @@ class DmMessage extends Model
         return $this->belongsTo(Gift::class, 'gift_id');
     }
 
-    public function toArray(): array
+    public function toMessageArray(): array
     {
         // For voice messages, decode body JSON to get url and duration separately
         $body          = $this->body;

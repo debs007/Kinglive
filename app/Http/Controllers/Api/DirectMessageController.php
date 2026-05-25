@@ -47,13 +47,13 @@ class DirectMessageController extends Controller
                 ],
                 'last_message' => $last ? [
                     'type'       => $last->type,
-                    'body'       => match($last->type) {
-                                       'text'  => $last->body,
-                                       'image' => '📷 Image',
-                                       'voice' => '🎤 Voice message',
-                                       'gift'  => '🎁 Gift',
-                                       default => $last->body,
-                                   },
+                    'body'       => ($last->type === 'image'
+                                       ? '📷 Image'
+                                       : ($last->type === 'voice'
+                                           ? '🎤 Voice message'
+                                           : ($last->type === 'gift'
+                                               ? '🎁 Gift'
+                                               : $last->body))),
                     'sender_id'  => $last->sender_id,
                     'created_at' => $last->created_at?->toIso8601String(),
                 ] : null,
@@ -283,10 +283,10 @@ class DirectMessageController extends Controller
             $this->_updateConversation($conv, $message, $myId);
 
             // Push WS event to receiver
-            $this->_pushWsToReceiver($receiverId, $message->toArray());
+            $this->_pushWsToReceiver($receiverId, $message->toMessageArray());
 
             return response()->json([
-                'message'      => $message->toArray(),
+                'message'      => $message->toMessageArray(),
                 'coins_spent'  => $totalCoins,
                 'new_balance'  => $sender->fresh()->coin_balance,
             ]);
@@ -340,27 +340,38 @@ class DirectMessageController extends Controller
 
         // Push WS event to receiver in real time
         $receiverId = $conv->user_one_id === $myId ? $conv->user_two_id : $conv->user_one_id;
-        $this->_pushWsToReceiver($receiverId, $message->toArray());
+        $this->_pushWsToReceiver($receiverId, $message->toMessageArray());
 
-        // Push notification (for when receiver's app is backgrounded/closed)
-        $sender = auth()->user();
-        app(NotificationService::class)->sendToUser(
-            userId: $receiverId,
-            title:  $sender->display_name ?? $sender->username,
-            body:   match($type) {
-                'text'  => $body,
-                'voice' => '🎤 Sent you a voice message',
-                'image' => '📷 Sent you a photo',
-                default => '💬 Sent you a message',
-            },
-            data:   [
+        // Push notification — wrapped in try/catch so message never fails
+        // if notification service is unavailable or misconfigured
+        try {
+            $sender   = auth()->user();
+            $notifTitle = $sender->display_name ?? $sender->username;
+            if ($type === 'voice') {
+                $notifBody = '🎤 Sent you a voice message';
+            } elseif ($type === 'image') {
+                $notifBody = '📷 Sent you a photo';
+            } elseif ($type === 'text') {
+                $notifBody = $body;
+            } else {
+                $notifBody = '💬 Sent you a message';
+            }
+            $notifData = [
                 'type'            => 'dm_message',
                 'conversation_id' => (string) $conversationId,
                 'sender_id'       => (string) $myId,
-            ]
-        );
+            ];
+            app(NotificationService::class)->sendToUser(
+                $receiverId,
+                $notifTitle,
+                $notifBody,
+                $notifData
+            );
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('DM push notification failed: ' . $e->getMessage());
+        }
 
-        return response()->json(['message' => $message->toArray()]);
+        return response()->json(['message' => $message->toMessageArray()]);
     }
 
     private function _updateConversation(DmConversation $conv, DmMessage $msg, int $senderId): void

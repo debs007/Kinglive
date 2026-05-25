@@ -306,6 +306,88 @@
             @endif
         </div>
 
+
+        {{-- ── DM Messages ──────────────────────────────────────────── --}}
+        <div class="card">
+            <div class="card-header">
+                <h3>💬 Messages</h3>
+                <span style="color:var(--text3);font-size:12px">{{ $dmMessages->total() }} total</span>
+            </div>
+
+            {{-- Conversation filter --}}
+            <form method="GET" action="{{ url()->current() }}" style="display:flex;gap:8px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap">
+                @foreach(request()->except(['dm_page','dm_conv']) as $k => $v)
+                    <input type="hidden" name="{{ $k }}" value="{{ $v }}">
+                @endforeach
+                <div>
+                    <label style="color:var(--text3);font-size:11px;display:block;margin-bottom:4px">Conversation</label>
+                    <select name="dm_conv" onchange="this.form.submit()"
+                        style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;min-width:180px">
+                        <option value="">All conversations</option>
+                        @foreach($dmConversations as $conv)
+                            <option value="{{ $conv->id }}" {{ request('dm_conv') == $conv->id ? 'selected' : '' }}>
+                                with {{ $conv->otherUser->username ?? 'Unknown' }} ({{ $conv->messages_count }})
+                            </option>
+                        @endforeach
+                    </select>
+                </div>
+                @if(request('dm_conv'))
+                    <a href="{{ url()->current() }}?{{ http_build_query(request()->except(['dm_conv','dm_page'])) }}"
+                       class="btn-secondary" style="font-size:12px;padding:7px 12px">Clear</a>
+                @endif
+            </form>
+
+            @if($dmMessages->isEmpty())
+                <p style="color:var(--text3);font-size:13px;text-align:center;padding:24px">No messages found.</p>
+            @else
+            {{-- Chat box --}}
+            <div style="display:flex;flex-direction:column;gap:10px;max-height:500px;overflow-y:auto;padding:12px;background:var(--bg3);border-radius:10px;border:1px solid var(--border)">
+                @foreach($dmMessages->getCollection()->reverse() as $msg)
+                    @php $isMine = $msg->sender_id == $user->id; @endphp
+                    <div style="display:flex;flex-direction:column;align-items:{{ $isMine ? 'flex-end' : 'flex-start' }}">
+                        <div style="font-size:10px;color:var(--text3);margin-bottom:3px;padding:0 4px">
+                            @if($isMine)
+                                <span style="color:var(--info);font-weight:600">{{ $user->username }}</span>
+                                → {{ $msg->conversation?->userTwo?->id == $user->id ? $msg->conversation?->userOne?->username : $msg->conversation?->userTwo?->username }}
+                            @else
+                                {{ $msg->sender?->username ?? '?' }}
+                                → <span style="color:var(--info);font-weight:600">{{ $user->username }}</span>
+                            @endif
+                            &nbsp;·&nbsp;{{ $msg->created_at?->format('M d, h:i A') }}
+                        </div>
+                        <div style="max-width:70%;padding:9px 14px;border-radius:{{ $isMine ? '14px 4px 14px 14px' : '4px 14px 14px 14px' }};background:{{ $isMine ? 'var(--primary)' : 'var(--surface2)' }};color:var(--text);font-size:13px;line-height:1.5;word-break:break-word">
+                            @if($msg->type === 'image')
+                                <span style="opacity:.7">📷 Image</span>
+                            @elseif($msg->type === 'voice')
+                                <span style="opacity:.7">🎤 Voice message</span>
+                            @elseif($msg->type === 'gift')
+                                <span style="color:var(--gold)">🎁 Gift{{ $msg->gift ? ': ' . $msg->gift->name : '' }}</span>
+                            @else
+                                {{ $msg->body }}
+                            @endif
+                        </div>
+                    </div>
+                @endforeach
+            </div>
+            {{-- Pagination --}}
+            <div style="margin-top:12px;display:flex;align-items:center;gap:8px;font-size:12px">
+                @if($dmMessages->onFirstPage())
+                    <span style="padding:5px 12px;border-radius:6px;background:var(--bg3);color:var(--text3)">← Prev</span>
+                @else
+                    <a href="{{ $dmMessages->previousPageUrl() }}&{{ http_build_query(request()->all()) }}"
+                       style="padding:5px 12px;border-radius:6px;background:var(--surface2);color:var(--text);text-decoration:none;border:1px solid var(--border)">← Prev</a>
+                @endif
+                <span style="color:var(--text3)">Page {{ $dmMessages->currentPage() }} of {{ $dmMessages->lastPage() }}</span>
+                @if($dmMessages->hasMorePages())
+                    <a href="{{ $dmMessages->nextPageUrl() }}&{{ http_build_query(request()->all()) }}"
+                       style="padding:5px 12px;border-radius:6px;background:var(--surface2);color:var(--text);text-decoration:none;border:1px solid var(--border)">Next →</a>
+                @else
+                    <span style="padding:5px 12px;border-radius:6px;background:var(--bg3);color:var(--text3)">Next →</span>
+                @endif
+            </div>
+            @endif
+        </div>
+
         {{-- ── Ban History ─────────────────────────────────────────── --}}
         <div class="card">
             <div class="card-header">

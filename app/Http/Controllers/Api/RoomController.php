@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Room\CreateRoomRequest;
 use App\Jobs\NotifyFollowersLiveJob;
+use App\Models\LiveReward;
 use App\Models\Room;
 use App\Services\AgoraService;
 use App\Services\BanService;
@@ -124,20 +125,19 @@ class RoomController extends Controller
             role: 'audience'
         );
 
-        // Use live Redis viewer count, not stale DB count
         $liveViewerCount = $this->roomService->getViewerCount($roomId);
 
         return response()->json([
-            'room'            => $room,
-            'agora_token'     => $viewerToken,
-            'agora_app_id'    => $this->agora->getAppId(),
-            'viewer_count'    => $liveViewerCount,
-            'is_following'    => auth()->user()->isFollowing($room->host_user_id),
-            'current_bg_url'  => $room->current_bg_url,
-            'current_user_id'     => $userId,
-            'current_username'    => auth()->user()->username,
-            'current_user_avatar' => auth()->user()->avatar_url,
-            'current_user_level'  => auth()->user()->level ?? 1,
+            'room'                  => $room,
+            'agora_token'           => $viewerToken,
+            'agora_app_id'          => $this->agora->getAppId(),
+            'viewer_count'          => $liveViewerCount,
+            'is_following'          => auth()->user()->isFollowing($room->host_user_id),
+            'current_bg_url'        => $room->current_bg_url,
+            'current_user_id'       => $userId,
+            'current_username'      => auth()->user()->username,
+            'current_user_avatar'   => auth()->user()->avatar_url,
+            'current_user_level'    => auth()->user()->level ?? 1,
             'user_coin_balance'     => auth()->user()->coin_balance,
             'host_diamond_balance'  => $room->host->diamond_balance ?? 0,
         ]);
@@ -158,17 +158,14 @@ class RoomController extends Controller
         // ── Live stats ────────────────────────────────────────────────────
         $host = auth()->user();
 
-        // Calculate duration in minutes
-        $startedAt      = $room->started_at ?? $room->created_at;
-        $durationMins   = (int) $startedAt->diffInMinutes($endedAt);
-        $durationHours  = (int) floor($durationMins / 60);
-        $remainingMins  = $durationMins % 60;
+        $startedAt     = $room->started_at ?? $room->created_at;
+        $durationMins  = (int) $startedAt->diffInMinutes($endedAt);
+        $durationHours = (int) floor($durationMins / 60);
 
-        // Always add live time
-        // Track today's live minutes in Redis for daily reward progress display
+        // Track today's live minutes in Redis for display purposes
         $todayMinKey = "live_minutes_today:{$host->id}:" . now()->toDateString();
-        \Illuminate\Support\Facades\Redis::incrby($todayMinKey, $durationMins);
-        \Illuminate\Support\Facades\Redis::expire($todayMinKey, 86400 * 2);
+        Redis::incrby($todayMinKey, $durationMins);
+        Redis::expire($todayMinKey, 86400 * 2);
 
         $updates = [
             'total_live_minutes' => \DB::raw("total_live_minutes + {$durationMins}"),
@@ -178,12 +175,10 @@ class RoomController extends Controller
 
         // Day count: only if session was >= 40 mins AND not already counted today
         if ($durationMins >= 40) {
-            $type    = $room->type; // 'video' | 'audio' | 'audio_board'
-            $dayKey  = "live_day_counted:{$host->id}:{$type}:" . now()->toDateString();
-            $counted = \Illuminate\Support\Facades\Redis::get($dayKey);
-
-            if (! $counted) {
-                \Illuminate\Support\Facades\Redis::setex($dayKey, 86400, 1);
+            $type   = $room->type;
+            $dayKey = "live_day_counted:{$host->id}:{$type}:" . now()->toDateString();
+            if (! Redis::get($dayKey)) {
+                Redis::setex($dayKey, 86400, 1);
                 if ($type === 'video') {
                     $updates['video_live_days'] = \DB::raw('video_live_days + 1');
                 } else {
@@ -194,40 +189,11 @@ class RoomController extends Controller
 
         $host->update($updates);
 
-        // ── Diamond reward for 40+ minute video live ──────────────────────
-        $diamondReward = 0;
-        if ($durationMins >= 40 && $room->type === 'video') {
-            $today     = now()->toDateString();
-            $rewardKey = "diamond_reward_given:{$host->id}:{$today}";
-
-            // Use SET with NX option — works with both phpredis and predis
-            // Returns true/OK if set, null/false if key already existed
-            try {
-                $claimed = \Illuminate\Support\Facades\Redis::set(
-                    $rewardKey, 1, 'EX', 86400 * 2, 'NX'
-                );
-            } catch (\Exception $e) {
-                // Fallback: manual check if Redis::set with NX not supported
-                $claimed = ! \Illuminate\Support\Facades\Redis::exists($rewardKey);
-                if ($claimed) {
-                    \Illuminate\Support\Facades\Redis::setex($rewardKey, 86400 * 2, 1);
-                }
-            }
-
-            if ($claimed) {
-                $host->increment('diamond_balance', 5000);
-                $diamondReward = 5000;
-
-                \App\Models\CoinTransaction::create([
-                    'user_id'       => $host->id,
-                    'type'          => 'live_reward',
-                    'amount'        => 5000,
-                    'balance_after' => $host->fresh()->diamond_balance,
-                    'reference'     => "live_reward:room:{$roomId}:{$today}",
-                ]);
-            }
-        }
-        // ─────────────────────────────────────────────────────────────────
+        // ── Diamond reward ────────────────────────────────────────────────
+        // Reward is handled by CreditLiveRewardJob (runs every minute).
+        // Here we just check if it was already credited for this room
+        // and return the amount so Flutter can show the celebration popup.
+        $diamondReward = LiveReward::where('room_id', $roomId)->value('amount') ?? 0;
 
         return response()->json([
             'message'        => 'Room ended.',
@@ -250,10 +216,8 @@ class RoomController extends Controller
 
     public function viewers(string $roomId): JsonResponse
     {
-        // Get active viewer fds from Redis, map to user info
         $fds = Redis::smembers("room:{$roomId}:fds");
 
-        // Collect user IDs from all fds first
         $userIds = [];
         foreach ($fds as $fd) {
             $userId = Redis::get("ws:fd:{$fd}:user");
@@ -264,13 +228,11 @@ class RoomController extends Controller
             return response()->json(['viewers' => []]);
         }
 
-        // Single query for all users
         $users = User::select('id', 'username', 'display_name', 'avatar_url', 'level')
             ->whereIn('id', array_unique($userIds))
             ->get()
             ->keyBy('id');
 
-        // Single query for following status
         $myFollowing = auth()->user()
             ->following()->pluck('following_id')->toArray();
 
@@ -288,12 +250,9 @@ class RoomController extends Controller
 
     public function viewerCount(string $roomId): JsonResponse
     {
-        // Count actual WS connections in the room (most reliable)
-        $fdsCount    = (int) Redis::scard("room:{$roomId}:fds");
-        $redisCount  = (int) (Redis::get("room:{$roomId}:viewers") ?? 0);
-
-        // Use the larger of the two to avoid showing 0 when Redis is slightly stale
-        $count = max($fdsCount > 0 ? $fdsCount - 1 : 0, $redisCount);
+        $fdsCount   = (int) Redis::scard("room:{$roomId}:fds");
+        $redisCount = (int) (Redis::get("room:{$roomId}:viewers") ?? 0);
+        $count      = max($fdsCount > 0 ? $fdsCount - 1 : 0, $redisCount);
 
         return response()->json(['viewer_count' => $count]);
     }
@@ -305,14 +264,8 @@ class RoomController extends Controller
 
         $this->roomService->recordHeartbeat($roomId, $userId);
 
-        // If this is the host, update their specific heartbeat timestamp
-        // Used by CleanupStaleRoomsJob to detect disconnected hosts
         if ($room->host_user_id === $userId) {
-            \Illuminate\Support\Facades\Redis::setex(
-                "room:{$roomId}:host_heartbeat",
-                300,          // auto-expire after 5 min (safety net)
-                time()
-            );
+            Redis::setex("room:{$roomId}:host_heartbeat", 300, time());
         }
 
         return response()->json(['ok' => true]);

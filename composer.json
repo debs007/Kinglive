@@ -7,6 +7,7 @@
         "php": "^8.4",
         "aws/aws-sdk-php": "^3.0",
         "cyberdeep/laravel-agora-token-generator": "^1.0",
+        "google/auth": "^1.50",
         "intervention/image": "^3.7",
         "laravel/framework": "^11.0",
         "laravel/horizon": "^5.24",
