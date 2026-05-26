@@ -54,11 +54,12 @@ class WebSocketHandler
         }
 
         static::$connections[$fd] = [
-            'user_id'  => $user->id,
-            'room_id'  => null,
-            'username' => $user->username,
-            'avatar'   => $user->avatar_url,
-            'level'    => (int) ($user->level ?? 1),
+            'user_id'   => $user->id,
+            'room_id'   => null,
+            'username'  => $user->username,
+            'avatar'    => $user->avatar_url,
+            'frame_url' => $user->frame_url,
+            'level'     => (int) ($user->level ?? 1),
         ];
 
         // Clean stale fds for this user before adding new one
@@ -232,6 +233,7 @@ class WebSocketHandler
                 'user_id'      => $conn['user_id'],
                 'username'     => $conn['username'],
                 'avatar'       => $conn['avatar'],
+                'frame_url'    => $conn['frame_url'] ?? '',
                 'level'        => (int) ($conn['level'] ?? 1),
                 'viewer_count' => $currentViewerCount,
             ], exclude: $fd, crossBroadcast: false);
@@ -646,8 +648,9 @@ class WebSocketHandler
                 'type'       => 'seat.assigned',
                 'seat_index' => $seatIndex,
                 'user_id'    => $userId,
-                'username'   => static::$connections[$targetFd]['username'] ?? '',
-                'avatar'     => static::$connections[$targetFd]['avatar'] ?? '',
+                'username'   => static::$connections[$targetFd]['username']   ?? '',
+                'avatar'     => static::$connections[$targetFd]['avatar']     ?? '',
+                'frame_url'  => static::$connections[$targetFd]['frame_url']  ?? '',
                 'agora_uid'  => $agoraUid,
             ]);
         }
@@ -1398,8 +1401,9 @@ class WebSocketHandler
             static::broadcastToRoom($server, $roomId, [
                 'type'       => 'call.joined',
                 'user_id'    => $userId,
-                'username'   => $targetConn['username'] ?? '',
-                'avatar'     => $targetConn['avatar']   ?? '',
+                'username'   => $targetConn['username']   ?? '',
+                'avatar'     => $targetConn['avatar']     ?? '',
+                'frame_url'  => $targetConn['frame_url']  ?? '',
                 'agora_uid'  => $agoraUid,
                 'camera_off' => true,
             ]);

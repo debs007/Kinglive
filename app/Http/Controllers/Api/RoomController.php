@@ -27,7 +27,7 @@ class RoomController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $rooms = Room::with('host:id,username,display_name,avatar_url,is_verified,level')
+        $rooms = Room::with('host:id,username,display_name,avatar_url,frame_url,is_verified,level')
             ->where('status', 'live')
             ->when($request->type, fn ($q, $t) => $q->where('type', $t))
             ->when($request->category, fn ($q, $c) => $q->where('category', $c))
@@ -42,14 +42,14 @@ class RoomController extends Controller
     {
         $followedIds = auth()->user()->following()->pluck('following_id');
 
-        $following = Room::with('host:id,username,avatar_url,is_verified')
+        $following = Room::with('host:id,username,avatar_url,frame_url,is_verified')
             ->where('status', 'live')
             ->whereIn('host_user_id', $followedIds)
             ->orderByDesc('viewer_count')
             ->limit(10)
             ->get();
 
-        $trending = Room::with('host:id,username,avatar_url,is_verified')
+        $trending = Room::with('host:id,username,avatar_url,frame_url,is_verified')
             ->where('status', 'live')
             ->whereNotIn('host_user_id', $followedIds)
             ->orderByDesc('viewer_count')
@@ -109,8 +109,8 @@ class RoomController extends Controller
     public function show(string $roomId): JsonResponse
     {
         $room = Room::with([
-            'host:id,username,display_name,avatar_url,is_verified,level,diamond_balance',
-            'seats.user:id,username,avatar_url',
+            'host:id,username,display_name,avatar_url,frame_url,is_verified,level,diamond_balance',
+            'seats.user:id,username,avatar_url,frame_url',
         ])->findOrFail($roomId);
 
         $userId = auth()->id();
@@ -228,7 +228,7 @@ class RoomController extends Controller
             return response()->json(['viewers' => []]);
         }
 
-        $users = User::select('id', 'username', 'display_name', 'avatar_url', 'level')
+        $users = User::select('id', 'username', 'display_name', 'avatar_url', 'frame_url', 'level')
             ->whereIn('id', array_unique($userIds))
             ->get()
             ->keyBy('id');
@@ -241,6 +241,7 @@ class RoomController extends Controller
             'username'     => $user->username,
             'display_name' => $user->display_name,
             'avatar_url'   => $user->avatar_url,
+            'frame_url'    => $user->frame_url,
             'level'        => $user->level,
             'is_following' => in_array($user->id, $myFollowing),
         ])->values()->toArray();

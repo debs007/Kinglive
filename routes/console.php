@@ -7,6 +7,10 @@ Schedule::job(new \App\Jobs\AutoExpireBansJob)->everyFiveMinutes();
 
 Schedule::job(new \App\Jobs\CleanupStaleRoomsJob)->everyMinute();
 Schedule::job(new \App\Jobs\CreditLiveRewardJob)->everyMinute();
+
+// Monthly reset — 1st of every month at midnight
+// Snapshots all host stats then resets monthly counters
+Schedule::job(new \App\Jobs\MonthlyResetJob)->monthlyOn(1, '00:00');
 //Schedule::job(new \App\Jobs\NotifyFollowersLiveJob)->everyMinute();
 //Schedule::job(new \App\Jobs\ProcessGiftJob)->everyMinute();
 

@@ -171,6 +171,12 @@
     <a href="{{ route('admin.backgrounds.index') }}" class="nav-item {{ request()->routeIs('admin.backgrounds.*') ? 'active' : '' }}">
         <span>🖼️</span> Backgrounds
     </a>
+    <a href="{{ route('admin.frames.index') }}" class="nav-item {{ request()->routeIs('admin.frames.*') ? 'active' : '' }}">
+        <span>✨</span> Frames
+    </a>
+    <a href="{{ route('admin.salary.index') }}" class="nav-item {{ request()->routeIs('admin.salary.*') ? 'active' : '' }}">
+        <span>💰</span> Salary Sheet
+    </a>
 
     <div class="nav-section">Economy</div>
     <a href="{{ route('admin.gifts.manage') }}" class="nav-item {{ request()->routeIs('admin.gifts.manage') ? 'active' : '' }}">

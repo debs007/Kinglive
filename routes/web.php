@@ -3,6 +3,8 @@
 use App\Http\Controllers\Admin\AgencyController;
 use App\Http\Controllers\Admin\SyncUserLevelsController;
 use App\Http\Controllers\Admin\BackgroundController;
+use App\Http\Controllers\Admin\FrameController;
+use App\Http\Controllers\Admin\SalaryController;
 use App\Http\Controllers\Admin\BannerController;
 use App\Http\Controllers\Agency\AgencyPortalController;
 use App\Http\Controllers\CoinSeller\CoinSellerPortalController;
@@ -99,6 +101,21 @@ Route::prefix('admin')->name('admin.')->group(function () {
         Route::post  ('backgrounds',                   [BackgroundController::class, 'store'])->name('backgrounds.store');
         Route::post  ('backgrounds/{id}/toggle',       [BackgroundController::class, 'toggle'])->name('backgrounds.toggle');
         Route::delete('backgrounds/{id}',              [BackgroundController::class, 'destroy'])->name('backgrounds.destroy');
+
+        // Frames
+        Route::get   ('frames',                        [FrameController::class, 'index'])->name('frames.index');
+        Route::post  ('frames/upload-url',             [FrameController::class, 'uploadUrl'])->name('frames.upload_url');
+        Route::post  ('frames',                        [FrameController::class, 'store'])->name('frames.store');
+        Route::post  ('frames/{id}/toggle',            [FrameController::class, 'toggle'])->name('frames.toggle');
+        Route::delete('frames/{id}',                   [FrameController::class, 'destroy'])->name('frames.destroy');
+        Route::post  ('frames/give/{userId}',          [FrameController::class, 'giveToUser'])->name('frames.give');
+        Route::post  ('frames/remove/{userId}',        [FrameController::class, 'removeFromUser'])->name('frames.remove');
+        Route::get   ('frames/user/{userId}',          [FrameController::class, 'userFrames'])->name('frames.user');
+        // Salary sheet
+        Route::get('salary',          [SalaryController::class, 'index'])->name('salary.index');
+        Route::get('salary/download', [SalaryController::class, 'download'])->name('salary.download');
+
+        Route::get   ('frames/all',                    fn() => response()->json(\App\Models\Frame::where('is_active', true)->orderBy('sort_order')->get(['id','name','price'])))->name('frames.all');
 
         // Gifts
         Route::get  ('gifts/report',       [GiftReportController::class, 'report'])->name('gifts.report');

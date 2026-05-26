@@ -136,6 +136,12 @@ Route::prefix('v1')->group(function () {
         Route::get   ('my-lives',               [\App\Http\Controllers\Api\MyLivesController::class, 'index']);
         Route::get   ('wallet/withdrawals',      [WalletController::class, 'withdrawalHistory']);
         
+        // Frames — shop and inventory
+        Route::get ('frames/shop',      [\App\Http\Controllers\Api\FrameController::class, 'shop']);
+        Route::get ('frames/inventory', [\App\Http\Controllers\Api\FrameController::class, 'inventory']);
+        Route::post('frames/buy',       [\App\Http\Controllers\Api\FrameController::class, 'buy']);
+        Route::post('frames/apply',     [\App\Http\Controllers\Api\FrameController::class, 'apply']);
+
         // Notifications
         Route::get   ('notifications',           [NotificationController::class, 'index']);
         Route::get   ('notifications/unread',    [NotificationController::class, 'unreadCount']);

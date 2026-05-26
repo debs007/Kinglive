@@ -43,27 +43,35 @@ class CreditLiveRewardJob implements ShouldQueue
         // - Host not already rewarded today
         $eligibleRooms = Room::whereIn('status', ['live', 'ended'])
             ->whereNotNull('started_at')
-            ->whereNotIn('host_user_id', $alreadyRewarded)
-            ->whereIn(DB::raw('DATE(started_at)'), [$today, $yesterday])
+            ->whereNotIn('host_user_id', $alreadyRewarded ?: [0])
+            ->whereRaw('DATE(started_at) IN (?, ?)', [$today, $yesterday])
             ->where(function ($q) {
-                $q->where(function ($q2) {
+                $minDuration = 40;
+                $q->where(function ($q2) use ($minDuration) {
                     // Still live — check duration using current time
                     $q2->where('status', 'live')
                        ->whereRaw(
                            'TIMESTAMPDIFF(MINUTE, started_at, NOW()) >= ?',
-                           [self::MIN_DURATION]
+                           [$minDuration]
                        );
-                })->orWhere(function ($q2) {
+                })->orWhere(function ($q2) use ($minDuration) {
                     // Ended — check duration using ended_at
                     $q2->where('status', 'ended')
                        ->whereNotNull('ended_at')
                        ->whereRaw(
                            'TIMESTAMPDIFF(MINUTE, started_at, ended_at) >= ?',
-                           [self::MIN_DURATION]
+                           [$minDuration]
                        );
                 });
             })
             ->get(['id', 'host_user_id', 'started_at', 'ended_at', 'status']);
+
+        Log::info('CreditLiveRewardJob: found ' . $eligibleRooms->count() . ' eligible rooms', [
+            'today'           => $today,
+            'yesterday'       => $yesterday,
+            'already_rewarded'=> count($alreadyRewarded),
+            'room_ids'        => $eligibleRooms->pluck('id')->toArray(),
+        ]);
 
         foreach ($eligibleRooms as $room) {
             $this->creditReward($room, $today);

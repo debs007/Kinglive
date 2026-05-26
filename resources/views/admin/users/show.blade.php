@@ -307,6 +307,36 @@
         </div>
 
 
+
+        {{-- ── User Frames ─────────────────────────────────────────────── --}}
+        <div class="card">
+            <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+                <h3>🖼️ Avatar Frames</h3>
+                <button onclick="document.getElementById('giveFrameModal').classList.remove('hidden')"
+                        class="btn-primary" style="font-size:12px;padding:6px 12px">+ Give Frame</button>
+            </div>
+
+            <div id="userFramesList">
+                <p style="color:var(--text3);font-size:13px">Loading...</p>
+            </div>
+        </div>
+
+        {{-- Give Frame Modal --}}
+        <div id="giveFrameModal" class="hidden modal-overlay">
+            <div class="modal-box" style="max-width:400px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                    <h3>Give Frame</h3>
+                    <button onclick="document.getElementById('giveFrameModal').classList.add('hidden')"
+                            style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:20px">✕</button>
+                </div>
+                <select id="frameSelect"
+                        style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:12px">
+                    <option value="">Loading frames...</option>
+                </select>
+                <button onclick="giveFrame()" class="btn-primary" style="width:100%">Give Frame</button>
+            </div>
+        </div>
+
         {{-- ── DM Messages ──────────────────────────────────────────── --}}
         <div class="card">
             <div class="card-header">
@@ -476,4 +506,72 @@ function switchDiamondTab(tab) {
     });
 }
 </script>
+
+<script>
+const userId = {{ $user->id }};
+
+// Load user frames
+async function loadUserFrames() {
+    const res  = await fetch(`/admin/frames/user/${userId}`);
+    const data = await res.json();
+    const list = document.getElementById('userFramesList');
+    if (!data.length) {
+        list.innerHTML = '<p style="color:var(--text3);font-size:13px">No frames in inventory.</p>';
+        return;
+    }
+    list.innerHTML = data.map(f => `
+        <div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border)">
+            ${f.thumbnail_url
+                ? `<img src="${f.thumbnail_url}" style="width:40px;height:40px;object-fit:contain;border-radius:6px">`
+                : `<div style="width:40px;height:40px;background:var(--bg3);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:18px">🖼️</div>`}
+            <div style="flex:1">
+                <div style="font-size:13px;font-weight:600;color:var(--text)">${f.name}</div>
+                <div style="font-size:11px;color:var(--text3)">${f.source === 'admin' ? '🎁 Given by admin' : '🛒 Purchased'}</div>
+            </div>
+            <button onclick="removeFrame(${f.id})"
+                    style="padding:4px 10px;border-radius:6px;border:1px solid #e74c3c;background:transparent;color:#e74c3c;cursor:pointer;font-size:11px">
+                Remove
+            </button>
+        </div>
+    `).join('');
+}
+
+// Load all frames for dropdown
+async function loadAllFrames() {
+    const res  = await fetch('/admin/frames/all');
+    const data = await res.json();
+    const sel  = document.getElementById('frameSelect');
+    sel.innerHTML = data.map(f => `<option value="${f.id}">${f.name}${f.price > 0 ? ' ('+f.price+' coins)' : ' (gift)'}</option>`).join('');
+}
+
+async function giveFrame() {
+    const frameId = document.getElementById('frameSelect').value;
+    if (!frameId) return;
+    const res = await fetch(`/admin/frames/give/${userId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+        body: JSON.stringify({ frame_id: frameId })
+    });
+    const data = await res.json();
+    alert(data.message);
+    document.getElementById('giveFrameModal').classList.add('hidden');
+    loadUserFrames();
+}
+
+async function removeFrame(frameId) {
+    if (!confirm('Remove this frame from user?')) return;
+    const res = await fetch(`/admin/frames/remove/${userId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': '{{ csrf_token() }}' },
+        body: JSON.stringify({ frame_id: frameId })
+    });
+    const data = await res.json();
+    alert(data.message);
+    loadUserFrames();
+}
+
+loadUserFrames();
+loadAllFrames();
+</script>
+
 @endsection
