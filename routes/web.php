@@ -5,6 +5,8 @@ use App\Http\Controllers\Admin\SyncUserLevelsController;
 use App\Http\Controllers\Admin\BackgroundController;
 use App\Http\Controllers\Admin\FrameController;
 use App\Http\Controllers\Admin\SalaryController;
+use App\Http\Controllers\Admin\LevelFrameController;
+use App\Http\Controllers\LegalController;
 use App\Http\Controllers\Admin\BannerController;
 use App\Http\Controllers\Agency\AgencyPortalController;
 use App\Http\Controllers\CoinSeller\CoinSellerPortalController;
@@ -58,6 +60,13 @@ Route::prefix('agency-portal')->name('agency.')->group(function () {
 });
 
 // ── Admin Auth ────────────────────────────────────────────────────────────────
+// ── Public legal pages ──────────────────────────────────────────────────────
+Route::get ('/privacy-policy',         [LegalController::class, 'privacy'])->name('privacy');
+Route::get ('/terms-conditions',        [LegalController::class, 'terms'])->name('terms');
+Route::get ('/delete-account',          [LegalController::class, 'deleteAccount'])->name('delete.account');
+Route::post('/delete-account',          [LegalController::class, 'deleteAccountSubmit'])->name('delete.account.submit');
+Route::get ('/delete-account/success',  [LegalController::class, 'deleteAccountSuccess'])->name('delete.account.success');
+
 Route::prefix('admin')->name('admin.')->group(function () {
 
     Route::get ('login',  [DashboardController::class, 'loginForm'])->name('login');
@@ -111,6 +120,13 @@ Route::prefix('admin')->name('admin.')->group(function () {
         Route::post  ('frames/give/{userId}',          [FrameController::class, 'giveToUser'])->name('frames.give');
         Route::post  ('frames/remove/{userId}',        [FrameController::class, 'removeFromUser'])->name('frames.remove');
         Route::get   ('frames/user/{userId}',          [FrameController::class, 'userFrames'])->name('frames.user');
+        // Level Frames
+        Route::get   ('level-frames',           [LevelFrameController::class, 'index'])->name('level_frames.index');
+        Route::post  ('level-frames/upload-url',[LevelFrameController::class, 'uploadUrl'])->name('level_frames.upload_url');
+        Route::post  ('level-frames',           [LevelFrameController::class, 'store'])->name('level_frames.store');
+        Route::post  ('level-frames/{id}/toggle',[LevelFrameController::class, 'toggle'])->name('level_frames.toggle');
+        Route::delete('level-frames/{id}',      [LevelFrameController::class, 'destroy'])->name('level_frames.destroy');
+
         // Salary sheet
         Route::get('salary',          [SalaryController::class, 'index'])->name('salary.index');
         Route::get('salary/download', [SalaryController::class, 'download'])->name('salary.download');

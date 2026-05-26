@@ -174,6 +174,9 @@
     <a href="{{ route('admin.frames.index') }}" class="nav-item {{ request()->routeIs('admin.frames.*') ? 'active' : '' }}">
         <span>✨</span> Frames
     </a>
+    <a href="{{ route('admin.level_frames.index') }}" class="nav-item {{ request()->routeIs('admin.level_frames.*') ? 'active' : '' }}">
+        <span>🎖️</span> Level Frames
+    </a>
     <a href="{{ route('admin.salary.index') }}" class="nav-item {{ request()->routeIs('admin.salary.*') ? 'active' : '' }}">
         <span>💰</span> Salary Sheet
     </a>
