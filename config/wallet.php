@@ -33,4 +33,13 @@ return [
     */
     'welcome_bonus_coins' => (int) env('WELCOME_BONUS_COINS', 100),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Live Reward Amount (diamonds)
+    |--------------------------------------------------------------------------
+    | Diamonds credited to host after 40+ mins of video live.
+    | Change via LIVE_REWARD_DIAMONDS in .env
+    */
+    'live_reward_diamonds' => (int) env('LIVE_REWARD_DIAMONDS', 5000),
+
 ];

@@ -3,62 +3,69 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\LiveReward;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Redis;
 
 class DailyRewardController extends Controller
 {
-    // Fixed daily reward amount
     private const DAILY_DIAMONDS = 5000;
 
     /**
      * GET /daily-reward
      * Returns current week's reward status for the authenticated user.
+     * Uses live_rewards table as source of truth.
      */
     public function status(): JsonResponse
     {
-        $user   = auth()->user();
-        $today  = now()->toDateString();
+        $user  = auth()->user();
+        $today = now()->toDateString();
 
-        // Build week starting from most recent Monday
-        $monday    = now()->startOfWeek()->toDateString();
-        $weekDays  = [];
+        // Get all live_rewards for this user this week
+        $monday    = now()->startOfWeek()->toDateString();   // Monday
+        $sunday    = now()->endOfWeek()->toDateString();     // Sunday
 
+        $collectedDates = LiveReward::where('user_id', $user->id)
+            ->whereBetween('reward_date', [$monday, $sunday])
+            ->pluck('reward_date')
+            ->map(fn($d) => (string) $d)
+            ->toArray();
+
+        // Build week Mon→Sun
+        $weekDays = [];
         for ($i = 0; $i < 7; $i++) {
-            $date      = now()->startOfWeek()->addDays($i)->toDateString();
-            $rewardKey = "diamond_reward_given:{$user->id}:{$date}";
-            $collected = (bool) Redis::get($rewardKey);
-
-            // Also check DB as fallback (in case Redis was flushed)
-            if (! $collected) {
-                $collected = DB::table('coin_transactions')
-                    ->where('user_id', $user->id)
-                    ->where('type', 'live_reward')
-                    ->where('reference', 'LIKE', "%{$date}%")
-                    ->exists();
-
-                // Re-populate Redis if found in DB
-                if ($collected) {
-                    Redis::setex($rewardKey, 86400 * 2, 1);
-                }
-            }
+            $date = now()->startOfWeek()->addDays($i)->toDateString();
 
             $weekDays[] = [
-                'day'       => $i + 1,           // 1=Mon, 7=Sun
+                'day'       => $i + 1,          // 1=Mon ... 7=Sun
                 'date'      => $date,
                 'diamonds'  => self::DAILY_DIAMONDS,
-                'collected' => $collected,
+                'collected' => in_array($date, $collectedDates),
                 'is_today'  => $date === $today,
                 'is_future' => $date > $today,
             ];
         }
 
-        // Check if today's live reward is achievable
-        // (did user do 40+ min video live today and not yet collected)
-        $todayCollected  = collect($weekDays)->firstWhere('is_today', true)['collected'] ?? false;
-        $todayLiveMinKey = "live_minutes_today:{$user->id}:" . now()->toDateString();
-        $liveMinToday    = (int) (Redis::get($todayLiveMinKey) ?? 0);
+        $todayCollected = in_array($today, $collectedDates);
+
+        // Calculate today's live minutes from actual ended rooms
+        // More reliable than Redis which can expire or get flushed
+        $liveMinToday = (int) \App\Models\Room::where('host_user_id', $user->id)
+            ->where('status', 'ended')
+            ->whereDate('started_at', $today)
+            ->whereNotNull('ended_at')
+            ->get(['started_at', 'ended_at'])
+            ->sum(function ($room) {
+                return $room->started_at->diffInMinutes($room->ended_at);
+            });
+
+        // Also add currently live room minutes if streaming right now
+        $liveRoom = \App\Models\Room::where('host_user_id', $user->id)
+            ->where('status', 'live')
+            ->whereDate('started_at', $today)
+            ->first();
+        if ($liveRoom) {
+            $liveMinToday += (int) $liveRoom->started_at->diffInMinutes(now());
+        }
 
         return response()->json([
             'week'            => $weekDays,

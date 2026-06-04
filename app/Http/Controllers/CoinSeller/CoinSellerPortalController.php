@@ -173,11 +173,10 @@ class CoinSellerPortalController extends Controller
 
         $data = $request->validate([
             'whatsapp_number' => ['nullable', 'string', 'max:20'],
-            'coin_sell_value' => ['nullable', 'numeric', 'min:0'],
-            'display_name'    => ['nullable', 'string', 'max:100'],
+            'price_per_100k'  => ['nullable', 'numeric', 'min:0'],
         ]);
 
-        $seller->update(array_filter($data, fn($v) => $v !== null));
+        $seller->update(array_filter($data, fn($v) => $v !== null && $v !== ''));
 
         return back()->with('success', 'Profile updated successfully.');
     }

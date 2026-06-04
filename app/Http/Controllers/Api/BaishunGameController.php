@@ -31,8 +31,8 @@ use Illuminate\Support\Str;
 class BaishunGameController extends Controller
 {
     // BaishunGame credentials
-    private const APP_ID      = '9287143082';
-    private const APP_KEY     = 'TGjOiwnwVn51NEKpckNnzm6HIDvwh7Rc';
+    private const APP_ID      = '8359980011';
+    private const APP_KEY     = 'HDYLzOqejpvXIaGMxnfjpKd5OWRt7RcA';
     private const APP_CHANNEL = 'kinglive';
     private const BASE_URL    = 'https://game-center-test.jieyou.shop';
     private const GSP         = 101; // Singapore server
@@ -269,24 +269,32 @@ class BaishunGameController extends Controller
             // and broadcasts to all users currently inside any live room
             if ($diff >= 10000) {
                 try {
-                    $winUser  = User::find((int) $userId);
-                    $gameName = \App\Models\Game::where('game_id', $gameId)
-                        ->value('name') ?? 'Game';
+                    // Dedup lock — same user can't trigger global notify twice in 10s
+                    $notifyLockKey = "game_win_notify:{$userId}";
+                    if (Redis::exists($notifyLockKey)) {
+                        Log::info("Global notify skipped (dedup): user={$userId}");
+                    } else {
+                        Redis::setex($notifyLockKey, 10, 1);
 
-                    Redis::lpush('ws:pending_broadcasts', json_encode([
-                        'rooms'   => ['__global__'],
-                        'payload' => json_encode([
-                            'type'          => 'global.notify',
-                            'notify_type'   => 'game_win',
-                            'sender_name'   => $winUser?->display_name
-                                              ?? $winUser?->username
-                                              ?? 'Player',
-                            'sender_avatar' => $winUser?->avatar_url ?? '',
-                            'game_name'     => $gameName,
-                            'amount'        => $diff,
-                        ]),
-                        'expires' => time() + 30,
-                    ]));
+                        $winUser  = User::find((int) $userId);
+                        $gameName = \App\Models\Game::where('game_id', $gameId)
+                            ->value('name') ?? 'Game';
+
+                        Redis::lpush('ws:pending_broadcasts', json_encode([
+                            'rooms'   => ['__global__'],
+                            'payload' => json_encode([
+                                'type'          => 'global.notify',
+                                'notify_type'   => 'game_win',
+                                'sender_name'   => $winUser?->display_name
+                                                  ?? $winUser?->username
+                                                  ?? 'Player',
+                                'sender_avatar' => $winUser?->avatar_url ?? '',
+                                'game_name'     => $gameName,
+                                'amount'        => $diff,
+                            ]),
+                            'expires' => time() + 30,
+                        ]));
+                    } // end dedup else
                 } catch (\Throwable $e) {
                     Log::warning("Global notify failed: " . $e->getMessage());
                 }

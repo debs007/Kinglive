@@ -14,7 +14,7 @@ class ExchangeController extends Controller
     // Based on: 100k coins = 1100 taka, 100k diamonds = 900 taka
     // 1 diamond = (900/100000) / (1100/100000) = 0.8182 coins
     private const DIAMONDS_PER_BATCH = 100;
-    private const COINS_PER_BATCH    = 82;
+    private const COINS_PER_BATCH    = 60;
     private const MIN_EXCHANGE       = 50000; // minimum 50,000 diamonds to exchange
 
     public function rate(): JsonResponse
@@ -23,8 +23,8 @@ class ExchangeController extends Controller
             'diamonds_per_batch' => self::DIAMONDS_PER_BATCH,
             'coins_per_batch'    => self::COINS_PER_BATCH,
             'min_diamonds'       => self::MIN_EXCHANGE, // 50,000
-            'rate_label'         => '100 💎 = 82 🪙',
-            'note'               => 'Exchange rate based on: 100K coins = ৳1100, 100K diamonds = ৳900',
+            'rate_label'         => '100 💎 = 60 🪙',
+            'note'               => 'Exchange rate based on: 100K coins = ৳1100, 100K diamonds = ৳600',
         ]);
     }
 

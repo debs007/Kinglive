@@ -147,19 +147,33 @@ class User extends Authenticatable implements JWTSubject
      */
     public function getMonthLiveMinutes(): int
     {
+        $monthStart = now()->startOfMonth()->startOfDay();
+        $monthEnd   = now()->endOfMonth()->endOfDay();
+
         return (int) \App\Models\Room::where('host_user_id', $this->id)
-            ->whereIn('status', ['ended', 'live']) // include currently live rooms
-            ->whereYear('started_at',  now()->year)
-            ->whereMonth('started_at', now()->month)
-            ->get(['started_at', 'ended_at', 'updated_at', 'status'])
+            ->where('type', 'video')          // video rooms only
+            ->whereIn('status', ['ended', 'live'])
+            ->whereBetween('started_at', [$monthStart, $monthEnd])
+            ->get(['started_at', 'ended_at', 'status'])
+            ->filter(function ($room) {
+                // Only count rooms >= 40 mins
+                $end     = $room->status === 'live' ? now() : $room->ended_at;
+                $minutes = ($room->started_at && $end)
+                    ? (int) $room->started_at->diffInMinutes($end)
+                    : 0;
+                return $minutes >= 40;
+            })
             ->sum(function ($room) {
-                $start = $room->started_at;
-                // For live rooms use current time, for ended use ended_at
-                $end   = $room->status === 'live'
-                    ? now()
-                    : ($room->ended_at ?? $room->updated_at);
-                return ($start && $end) ? $start->diffInMinutes($end) : 0;
+                $end = $room->status === 'live' ? now() : $room->ended_at;
+                return ($room->started_at && $end)
+                    ? (int) $room->started_at->diffInMinutes($end)
+                    : 0;
             });
+    }
+
+    public function getMonthLiveHours(): float
+    {
+        return round($this->getMonthLiveMinutes() / 60, 1);
     }
 
     public function toProfileArray(): array
@@ -184,8 +198,8 @@ class User extends Authenticatable implements JWTSubject
             'agency_id'       => $this->agency_id,
             'audio_live_days'   => $this->audio_live_days   ?? 0,
             'video_live_days'   => $this->video_live_days   ?? 0,
-            'total_live_minutes'=> $this->getMonthLiveMinutes(), // monthly, not all-time
-            'total_live_hours'  => $this->total_live_hours   ?? 0,
+            'total_live_minutes'=> $this->getMonthLiveMinutes(),  // video, >=40min, this month
+            'total_live_hours'  => $this->getMonthLiveHours(), // calculated from above,
         ];
     }
 }

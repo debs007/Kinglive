@@ -151,22 +151,37 @@ class WebSocketHandler
             $room   = \App\Models\Room::find($roomId);
             $isHost = $room && $room->host_user_id === $conn['user_id'];
 
+            // If this user was in a call, broadcast call.left immediately
+            // so other participants' tiles disappear right away
+            if (! $isHost && ($conn['in_call'] ?? false)) {
+                static::broadcastToRoom($server, $roomId, [
+                    'type'    => 'call.left',
+                    'user_id' => (string) $conn['user_id'],
+                ]);
+                Log::info("WS: call participant disconnected user={$conn['user_id']} room={$roomId}");
+            }
+
             static::removeFromRoom($server, $fd, $conn);
 
             if ($isHost) {
-                $room?->update(['status' => 'ended', 'ended_at' => now()]);
+                // Grace period — don't end room immediately on WS disconnect
+                // Host may have a brief network drop and reconnect within 60s
+                // Set a Redis key with 60s TTL — if host reconnects, key is cleared
+                // If they don't reconnect, EndHostRoomJob fires after TTL expires
+                $graceKey = "room:{$roomId}:host_grace";
+                Redis::setex($graceKey, 60, $conn['user_id']);
+
+                // Broadcast reconnecting state to audience
                 static::broadcastToRoom($server, $roomId, [
-                    'type'    => 'room.ended',
+                    'type'    => 'host.reconnecting',
                     'room_id' => $roomId,
-                ], crossBroadcast: false);  // never cross-broadcast room.ended
-                Redis::del(
-                    "room:{$roomId}:fds",
-                    "room:{$roomId}:viewers",
-                    "room:{$roomId}:seats",
-                    "room:{$roomId}:host_heartbeat",
-                    "room:{$roomId}:heartbeats",
-                );
-                Log::info("WS: host ended room {$roomId}");
+                ], crossBroadcast: false);
+
+                // Schedule room end after grace period
+                \App\Jobs\EndHostRoomJob::dispatch($roomId, $conn['user_id'])
+                    ->delay(now()->addSeconds(60));
+
+                Log::info("WS: host disconnected, grace period started room={$roomId}");
             }
         }
 
@@ -217,7 +232,19 @@ class WebSocketHandler
         $room = Room::find($roomId);
         $isHost = $room?->host_user_id === $conn['user_id'];
 
-        if (! $isHost) {
+        if ($isHost) {
+            // Host reconnected — clear grace period key so EndHostRoomJob skips
+            $graceKey = "room:{$roomId}:host_grace";
+            if (Redis::exists($graceKey)) {
+                Redis::del($graceKey);
+                // Notify audience host is back
+                static::broadcastToRoom($server, $roomId, [
+                    'type'    => 'host.reconnected',
+                    'room_id' => $roomId,
+                ], crossBroadcast: false);
+                Log::info("WS: host reconnected, grace period cancelled room={$roomId}");
+            }
+        } else {
             $newCount = Redis::incr("room:{$roomId}:viewers");
             Room::where('id', $roomId)->update(['viewer_count' => (int) $newCount]);
         }
@@ -260,7 +287,13 @@ class WebSocketHandler
         $chatRaw             = Redis::zrange("room:{$roomId}:chat", -50, -1);
         $chat                = array_map(fn ($c) => json_decode($c, true), $chatRaw);
         $callParticipantsRaw = Redis::hgetall("call:{$roomId}:participants") ?: [];
-        $callParticipants    = array_values(array_map(fn ($p) => json_decode($p, true), $callParticipantsRaw));
+        // Only include participants whose WS is still connected
+        // ws_disconnected ones are kept in Redis for 30s reconnect window
+        // but new joiners should NOT see them — they'd see a ghost tile
+        $callParticipants = array_values(array_filter(
+            array_map(fn ($p) => json_decode($p, true), $callParticipantsRaw),
+            fn ($p) => empty($p['ws_disconnected'])
+        ));
 
         // Include current background so new joiners see it immediately
         $room          = \App\Models\Room::find($roomId);
@@ -1396,6 +1429,12 @@ class WebSocketHandler
             // host is shown as main video, not as a participant tile
             Redis::expire($callKey, 86400);
 
+            // Mark participant as in_call in connection map
+            // so onClose can broadcast call.left if they disconnect
+            if (isset(static::$connections[$targetFd])) {
+                static::$connections[$targetFd]['in_call'] = true;
+            }
+
             $server->push($targetFd, json_encode(['type' => 'call.accepted', 'agora_uid' => $agoraUid]));
 
             static::broadcastToRoom($server, $roomId, [
@@ -1416,6 +1455,11 @@ class WebSocketHandler
     {
         $roomId = $conn['room_id'];
         if (! $roomId) return;
+
+        // Clear in_call flag so onClose doesn't double-broadcast
+        if (isset(static::$connections[$fd])) {
+            static::$connections[$fd]['in_call'] = false;
+        }
 
         Redis::hdel("call:{$roomId}:participants", $conn['user_id']);
         // If no participants left, remove host too

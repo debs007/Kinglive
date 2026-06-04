@@ -129,7 +129,8 @@ Route::prefix('admin')->name('admin.')->group(function () {
 
         // Salary sheet
         Route::get('salary',          [SalaryController::class, 'index'])->name('salary.index');
-        Route::get('salary/download', [SalaryController::class, 'download'])->name('salary.download');
+        Route::get('salary/download',        [SalaryController::class, 'download'])->name('salary.download');
+        Route::get('salary/download-agency', [SalaryController::class, 'downloadAgency'])->name('salary.download_agency');
 
         Route::get   ('frames/all',                    fn() => response()->json(\App\Models\Frame::where('is_active', true)->orderBy('sort_order')->get(['id','name','price'])))->name('frames.all');
 

@@ -23,13 +23,16 @@ class CreditLiveRewardJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    private const REWARD_AMOUNT = 5000;
-    private const MIN_DURATION  = 40; // minutes
+    private int $rewardAmount;
+    private const MIN_DURATION = 40; // minutes
 
     public function handle(): void
     {
-        $today     = now()->toDateString();
-        $yesterday = now()->subDay()->toDateString();
+        $this->rewardAmount = (int) config('wallet.live_reward_diamonds', 5000);
+
+        $today    = now()->toDateString();
+        $dayStart = now()->startOfDay();   // Dhaka start of day via APP_TIMEZONE
+        $dayEnd   = now()->endOfDay();     // Dhaka end of day via APP_TIMEZONE
 
         // Users already rewarded today — exclude them
         $alreadyRewarded = LiveReward::where('reward_date', $today)
@@ -37,38 +40,23 @@ class CreditLiveRewardJob implements ShouldQueue
             ->toArray();
 
         // Find eligible rooms:
-        // - Status: live OR ended (host may have ended before job ran)
+        // - Status: ended ONLY (don't reward mid-stream)
+        // - Ended today (covers streams that started yesterday and ended after midnight)
         // - Duration >= 40 minutes
-        // - Started today OR yesterday (catches midnight boundary)
         // - Host not already rewarded today
-        $eligibleRooms = Room::whereIn('status', ['live', 'ended'])
+        $eligibleRooms = Room::where('status', 'ended')
+            ->where('type', 'video')          // video rooms only
             ->whereNotNull('started_at')
+            ->whereNotNull('ended_at')
             ->whereNotIn('host_user_id', $alreadyRewarded ?: [0])
-            ->whereRaw('DATE(started_at) IN (?, ?)', [$today, $yesterday])
-            ->where(function ($q) {
-                $minDuration = 40;
-                $q->where(function ($q2) use ($minDuration) {
-                    // Still live — check duration using current time
-                    $q2->where('status', 'live')
-                       ->whereRaw(
-                           'TIMESTAMPDIFF(MINUTE, started_at, NOW()) >= ?',
-                           [$minDuration]
-                       );
-                })->orWhere(function ($q2) use ($minDuration) {
-                    // Ended — check duration using ended_at
-                    $q2->where('status', 'ended')
-                       ->whereNotNull('ended_at')
-                       ->whereRaw(
-                           'TIMESTAMPDIFF(MINUTE, started_at, ended_at) >= ?',
-                           [$minDuration]
-                       );
-                });
-            })
-            ->get(['id', 'host_user_id', 'started_at', 'ended_at', 'status']);
+            ->whereBetween('ended_at', [$dayStart, $dayEnd])
+            ->get(['id', 'host_user_id', 'started_at', 'ended_at', 'status'])
+            ->filter(fn($r) =>
+                (int) $r->started_at->diffInMinutes($r->ended_at) >= self::MIN_DURATION
+            );
 
         Log::info('CreditLiveRewardJob: found ' . $eligibleRooms->count() . ' eligible rooms', [
             'today'           => $today,
-            'yesterday'       => $yesterday,
             'already_rewarded'=> count($alreadyRewarded),
             'room_ids'        => $eligibleRooms->pluck('id')->toArray(),
         ]);
@@ -86,18 +74,18 @@ class CreditLiveRewardJob implements ShouldQueue
                     'user_id'     => $room->host_user_id,
                     'reward_date' => $today,
                     'room_id'     => $room->id,
-                    'amount'      => self::REWARD_AMOUNT,
+                    'amount'      => $this->rewardAmount,
                     'credited_at' => now(),
                 ]);
 
                 User::where('id', $room->host_user_id)
-                    ->increment('diamond_balance', self::REWARD_AMOUNT);
+                    ->increment('diamond_balance', $this->rewardAmount);
 
                 $user = User::find($room->host_user_id);
                 CoinTransaction::create([
                     'user_id'       => $room->host_user_id,
                     'type'          => 'live_reward',
-                    'amount'        => self::REWARD_AMOUNT,
+                    'amount'        => $this->rewardAmount,
                     'balance_after' => $user?->diamond_balance ?? 0,
                     'reference'     => "live_reward:room:{$room->id}:{$today}",
                 ]);

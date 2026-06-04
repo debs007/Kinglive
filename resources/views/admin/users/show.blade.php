@@ -10,7 +10,7 @@
         <div style="text-align:center;padding:12px 0">
             <img src="{{ $user->avatar_url }}" style="width:80px;height:80px;border-radius:50%;border:2px solid var(--gold)" alt="">
             <h3 style="margin-top:12px">{{ $user->display_name ?? $user->username }}</h3>
-            <p style="color:var(--text3);font-size:13px">@{{ $user->username }}</p>
+            <p style="color:var(--text3);font-size:13px">Id: {{ 100000+$user->id }}</p>
             <span class="badge {{ $user->is_active ? 'badge-active' : 'badge-expired' }}" style="margin-top:6px">
                 {{ $user->is_active ? 'Active' : 'Disabled' }}
             </span>
