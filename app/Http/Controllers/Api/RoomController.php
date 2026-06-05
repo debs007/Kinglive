@@ -35,7 +35,7 @@ class RoomController extends Controller
             ->when($request->category, fn ($q, $c) => $q->where('category', $c))
             ->when($request->search, fn ($q, $s) => $q->where('title', 'like', "%{$s}%"))
             ->orderByDesc('viewer_count')
-            ->paginate(20);
+            ->paginate(500); // show all live rooms — no artificial limit
 
         return response()->json($rooms);
     }
