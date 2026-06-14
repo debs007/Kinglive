@@ -121,6 +121,10 @@ class WebSocketHandler
                 'ping'                => static::handlePing($server, $fd, $conn),
                 'room.bg_change'      => static::handleBgChange($server, $fd, $conn, $data),
                 'seat.emoji'          => static::handleSeatEmoji($server, $fd, $conn, $data),
+                'seat.mute_request'   => static::handleSeatMuteRequest($server, $fd, $conn, $data),
+                'room.auto_join'      => static::handleAutoJoin($server, $fd, $conn, $data),
+                'room.seat_count'     => static::handleSeatCount($server, $fd, $conn, $data),
+                'seat.auto_take'      => static::handleSeatAutoTake($server, $fd, $conn, $data),
                 'screen.share'        => static::handleScreenShare($server, $fd, $conn, $data),
                 'pk.random_toggle'    => static::handleRandomPkToggle($server, $fd, $conn, $data),
                 'video.play'          => static::handleVideoEvent($server, $fd, $conn, $data),
@@ -326,12 +330,17 @@ class WebSocketHandler
             $videoState['timestamp'] = time(); // reset timestamp to now
         }
 
+        // Get current seat count — use Redis value (may have been increased at runtime)
+        $seatCount = (int) (Redis::get("room:{$roomId}:seat_count") ?? $room?->seat_count ?? 8);
+
         $server->push($fd, json_encode([
             'type'              => 'room.state',
             'room_id'           => $roomId,
             'viewer_count'      => (int) Redis::get("room:{$roomId}:viewers"),
             'recent_chat'       => array_values($chat),
             'seats'             => $seatsObj,
+            'seat_count'        => $seatCount,  // late joiners get current seat count
+            'auto_join'         => Redis::get("room:{$roomId}:auto_join") === '1',
             'call_participants' => $callParticipants,
             'current_bg_url'    => $currentBgUrl,
             'screen_share'      => $screenShare,

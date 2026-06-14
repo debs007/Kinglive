@@ -16,6 +16,7 @@ use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\GameReportController;
 use App\Http\Controllers\Admin\GiftReportController;
 use App\Http\Controllers\Admin\RoomController;
+use App\Http\Controllers\Admin\PopupBannerController;
 use App\Http\Controllers\Admin\SettingsController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Admin\WithdrawalController;
@@ -178,6 +179,36 @@ Route::prefix('admin')->name('admin.')->group(function () {
         Route::get   ('agencies/{id}/salary-sheet', [AgencyController::class, 'salarySheet'])->name('agencies.salary_sheet');
 
 
+
+        // ── Frames ──────────────────────────────────────────────────────────────
+        Route::get   ('frames',                         [FrameController::class, 'index'])->name('frames.index');
+        Route::post  ('frames/upload-url',              [FrameController::class, 'uploadUrl'])->name('frames.upload_url');
+        Route::post  ('frames',                         [FrameController::class, 'store'])->name('frames.store');
+        Route::post  ('frames/{id}/toggle',             [FrameController::class, 'toggle'])->name('frames.toggle');
+        Route::delete('frames/{id}',                    [FrameController::class, 'destroy'])->name('frames.destroy');
+        Route::post  ('frames/give/{userId}',           [FrameController::class, 'giveToUser'])->name('frames.give');
+        Route::post  ('frames/remove/{userId}',         [FrameController::class, 'removeFromUser'])->name('frames.remove');
+        Route::get   ('frames/user/{userId}',           [FrameController::class, 'userFrames'])->name('frames.user');
+        Route::get   ('frames/all',                     fn() => response()->json(\App\Models\Frame::where('is_active', true)->orderBy('sort_order')->get(['id','name','price'])))->name('frames.all');
+
+        // ── Level Frames ─────────────────────────────────────────────────────────
+        Route::get   ('level-frames',                   [LevelFrameController::class, 'index'])->name('level_frames.index');
+        Route::post  ('level-frames/upload-url',        [LevelFrameController::class, 'uploadUrl'])->name('level_frames.upload_url');
+        Route::post  ('level-frames',                   [LevelFrameController::class, 'store'])->name('level_frames.store');
+        Route::post  ('level-frames/{id}/toggle',       [LevelFrameController::class, 'toggle'])->name('level_frames.toggle');
+        Route::delete('level-frames/{id}',              [LevelFrameController::class, 'destroy'])->name('level_frames.destroy');
+
+        // ── Popup Banners ────────────────────────────────────────────────────────
+        Route::get   ('popup-banners',                  [PopupBannerController::class, 'index'])->name('popup_banners.index');
+        Route::post  ('popup-banners/upload-url',       [PopupBannerController::class, 'uploadUrl'])->name('popup_banners.upload_url');
+        Route::post  ('popup-banners',                  [PopupBannerController::class, 'store'])->name('popup_banners.store');
+        Route::post  ('popup-banners/{id}/toggle',      [PopupBannerController::class, 'toggle'])->name('popup_banners.toggle');
+        Route::delete('popup-banners/{id}',             [PopupBannerController::class, 'destroy'])->name('popup_banners.destroy');
+
+        // ── Salary Sheet ─────────────────────────────────────────────────────────
+        Route::get('salary',               [SalaryController::class, 'index'])->name('salary.index');
+        Route::get('salary/download',      [SalaryController::class, 'download'])->name('salary.download');
+        Route::get('salary/download-agency',[SalaryController::class, 'downloadAgency'])->name('salary.download_agency');
 
         // Settings
         Route::get ('settings',            [SettingsController::class, 'index'])->name('settings.index');
