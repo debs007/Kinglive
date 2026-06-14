@@ -13,8 +13,14 @@ use Illuminate\Support\Facades\Redis;
 
 /**
  * Fired 60 seconds after host WS disconnects.
- * If host reconnected within that window, grace key is gone — we skip.
- * If host did not reconnect, we end the room properly.
+ *
+ * Uses a unique token per disconnect cycle to avoid false-positives.
+ * Scenario prevented:
+ *   - Host drops at T=12min  → Job A dispatched with token "abc"
+ *   - Host reconnects        → grace key deleted
+ *   - Host drops again T=22  → Job B dispatched with token "xyz", grace key = "xyz"
+ *   - Job A fires            → grace key = "xyz" ≠ "abc" → SKIP ✅
+ *   - Job B fires            → grace key = "xyz" = "xyz"  → END  ✅
  */
 class EndHostRoomJob implements ShouldQueue
 {
@@ -23,19 +29,22 @@ class EndHostRoomJob implements ShouldQueue
     public function __construct(
         private readonly string $roomId,
         private readonly int    $hostUserId,
+        private readonly string $token,        // unique per disconnect cycle
     ) {}
 
     public function handle(): void
     {
-        $graceKey = "room:{$this->roomId}:host_grace";
+        $graceKey     = "room:{$this->roomId}:host_grace";
+        $storedToken  = Redis::get($graceKey);
 
-        // If grace key still exists — host did NOT reconnect — end the room
-        if (! Redis::exists($graceKey)) {
-            Log::info("EndHostRoomJob: host reconnected, skipping room={$this->roomId}");
+        // Token mismatch — host reconnected and disconnected again
+        // A newer job is already queued for the latest disconnect — skip
+        if ($storedToken !== $this->token) {
+            Log::info("EndHostRoomJob: token mismatch, skipping room={$this->roomId} expected={$this->token} stored={$storedToken}");
             return;
         }
 
-        // Grace key still there — host is truly gone — end the room
+        // Token matches — this is the most recent disconnect — end the room
         Redis::del($graceKey);
 
         $room = Room::find($this->roomId);
@@ -46,7 +55,6 @@ class EndHostRoomJob implements ShouldQueue
 
         $room->update(['status' => 'ended', 'ended_at' => now()]);
 
-        // Clean up Redis room data
         Redis::del(
             "room:{$this->roomId}:fds",
             "room:{$this->roomId}:viewers",
@@ -57,7 +65,6 @@ class EndHostRoomJob implements ShouldQueue
 
         Log::info("EndHostRoomJob: room ended after grace period room={$this->roomId}");
 
-        // Broadcast room.ended via Redis so Swoole picks it up
         Redis::lpush('ws:pending_broadcasts', json_encode([
             'rooms'   => [$this->roomId],
             'payload' => json_encode([
