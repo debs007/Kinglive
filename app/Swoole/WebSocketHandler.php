@@ -13,7 +13,7 @@ use Swoole\WebSocket\Server;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
 /**
- * King Live � Swoole WebSocket Handler
+ * King Live — Swoole WebSocket Handler
  */
 class WebSocketHandler
 {
@@ -69,7 +69,7 @@ class WebSocketHandler
             if (!$server->isEstablished($oldFd)) {
                 Redis::srem("ws:user:{$user->id}:fds", $oldFd);
                 Redis::del("ws:fd:{$oldFd}:user");
-                // Do NOT remove from room:{roomId}:fds here �
+                // Do NOT remove from room:{roomId}:fds here —
                 // handleRoomJoin manages room membership correctly.
                 // Removing here would kick the host out of their own room set.
                 unset(static::$connections[$oldFd]);
@@ -168,7 +168,7 @@ class WebSocketHandler
             static::removeFromRoom($server, $fd, $conn);
 
             if ($isHost) {
-                // Grace period � don't end room immediately on WS disconnect
+                // Grace period — don't end room immediately on WS disconnect
                 // Host may have a brief network drop and reconnect within 60s
                 // Use unique token per disconnect cycle to prevent stale jobs
                 // from ending the room after host reconnected and dropped again
@@ -182,7 +182,7 @@ class WebSocketHandler
                     'room_id' => $roomId,
                 ], crossBroadcast: false);
 
-                // Schedule room end after grace period � pass token for validation
+                // Schedule room end after grace period — pass token for validation
                 \App\Jobs\EndHostRoomJob::dispatch($roomId, $conn['user_id'], $token)
                     ->delay(now()->addSeconds(60));
 
@@ -197,7 +197,7 @@ class WebSocketHandler
         Log::info("WS: disconnected fd={$fd} user_id={$conn['user_id']}");
     }
 
-    //  Room 
+    // ── Room ──────────────────────────────────────────────────────────────────
 
     private static function handleRoomJoin(Server $server, int $fd, array &$conn, array $data): void
     {
@@ -238,7 +238,7 @@ class WebSocketHandler
         $isHost = $room?->host_user_id === $conn['user_id'];
 
         if ($isHost) {
-            // Host reconnected � clear grace period key so EndHostRoomJob skips
+            // Host reconnected — clear grace period key so EndHostRoomJob skips
             $graceKey = "room:{$roomId}:host_grace";
             if (Redis::exists($graceKey)) {
                 Redis::del($graceKey);
@@ -293,7 +293,7 @@ class WebSocketHandler
         $callParticipantsRaw = Redis::hgetall("call:{$roomId}:participants") ?: [];
         // Only include participants whose WS is still connected
         // ws_disconnected ones are kept in Redis for 30s reconnect window
-        // but new joiners should NOT see them � they'd see a ghost tile
+        // but new joiners should NOT see them — they'd see a ghost tile
         $callParticipants = array_values(array_filter(
             array_map(fn ($p) => json_decode($p, true), $callParticipantsRaw),
             fn ($p) => empty($p['ws_disconnected'])
@@ -330,7 +330,7 @@ class WebSocketHandler
             $videoState['timestamp'] = time(); // reset timestamp to now
         }
 
-        // Get current seat count � use Redis value (may have been increased at runtime)
+        // Get current seat count — use Redis value (may have been increased at runtime)
         $seatCount = (int) (Redis::get("room:{$roomId}:seat_count") ?? $room?->seat_count ?? 8);
 
         $server->push($fd, json_encode([
@@ -395,7 +395,7 @@ class WebSocketHandler
      * Used for global gift/game win announcements.
      */
     /**
-     * Called on every ping � removes call participants whose WS dropped
+     * Called on every ping — removes call participants whose WS dropped
      * and didn't reconnect within 30 seconds.
      */
     private static function cleanupDroppedParticipants(Server $server, int $fd, array $conn): void
@@ -411,7 +411,7 @@ class WebSocketHandler
             // Check if the 30s TTL key still exists
             $ttlKey = "call:disconnected:{$roomId}:{$userId}";
             if (! Redis::exists($ttlKey)) {
-                // TTL expired � they didn't reconnect, remove them
+                // TTL expired — they didn't reconnect, remove them
                 Redis::hdel("call:{$roomId}:participants", $userId);
                 if (Redis::hlen("call:{$roomId}:participants") <= 1) {
                     Redis::del("call:{$roomId}:participants");
@@ -426,11 +426,17 @@ class WebSocketHandler
 
     private static function broadcastGlobal(Server $server, array $payload): void
     {
-        $json = json_encode($payload);
+        $json        = json_encode($payload);
+        $type        = $payload['type'] ?? '';
+        $inRoomOnly  = ! in_array($type, ['room.removed', 'global.notify']);
+
         foreach ($server->connections as $fd) {
             if (! $server->isEstablished($fd)) continue;
             $conn = static::$connections[$fd] ?? null;
-            if (! $conn || empty($conn['room_id'])) continue; // only in-room users
+            if (! $conn) continue;
+            // room.removed and global.notify go to ALL connected users
+            // Other broadcasts only go to users currently in a room
+            if ($inRoomOnly && empty($conn['room_id'])) continue;
             try { $server->push($fd, $json); } catch (\Throwable) {}
         }
     }
@@ -443,7 +449,7 @@ class WebSocketHandler
         $room = \App\Models\Room::find($roomId);
         if ($room?->host_user_id !== $conn['user_id']) return;
 
-        // Broadcast room.ended to audience � exclude host so they don't get the dialog
+        // Broadcast room.ended to audience — exclude host so they don't get the dialog
         static::broadcastToRoom($server, $roomId, [
             'type'    => 'room.ended',
             'room_id' => $roomId,
@@ -473,13 +479,13 @@ class WebSocketHandler
         Redis::del("room:{$roomId}:user_pending:{$conn['user_id']}");
 
         // On WS disconnect: mark participant as ws_disconnected but KEEP in hash
-        // They may still be streaming on Agora � late joiners can still see/hear them
+        // They may still be streaming on Agora — late joiners can still see/hear them
         // Only fully remove when they explicitly leave call or Agora stream ends
         if (Redis::hexists("call:{$roomId}:participants", $conn['user_id'])) {
             $existing = json_decode(Redis::hget("call:{$roomId}:participants", $conn['user_id']), true) ?? [];
             $existing['ws_disconnected'] = true;
             Redis::hset("call:{$roomId}:participants", $conn['user_id'], json_encode($existing));
-            // Set a TTL on this flag � if they don't reconnect in 30s, remove them
+            // Set a TTL on this flag — if they don't reconnect in 30s, remove them
             Redis::setex("call:disconnected:{$roomId}:{$conn['user_id']}", 30, 1);
             // Broadcast to existing audience so they know WS is down (audio may continue)
             static::broadcastToRoom($server, $roomId, [
@@ -508,7 +514,7 @@ class WebSocketHandler
         $conn['room_id'] = null;
     }
 
-    //  Chat 
+    // ── Chat ──────────────────────────────────────────────────────────────────
 
     private static function handleChat(Server $server, int $fd, array $conn, array $data): void
     {
@@ -546,7 +552,7 @@ class WebSocketHandler
         ], exclude: $fd);
     }
 
-    //  DM (Direct Message) 
+    // ── DM (Direct Message) ───────────────────────────────────────────────────
 
     /**
      * Push a DM message WS event to the receiver.
@@ -555,7 +561,7 @@ class WebSocketHandler
      */
     /**
      * Queue a DM message for delivery to a user via WebSocket.
-     * Called from HTTP process (DirectMessageController) � cannot access
+     * Called from HTTP process (DirectMessageController) — cannot access
      * WS $connections directly. Stores in Redis, delivered on next ping.
      */
     public static function queueDmForUser(int $receiverId, array $message): void
@@ -570,7 +576,7 @@ class WebSocketHandler
         Redis::expire($key, 300);
     }
 
-    //  Seats 
+    // ── Seats ─────────────────────────────────────────────────────────────────
 
     private static function handleSeatRequest(Server $server, int $fd, array $conn, array $data): void
     {
@@ -640,7 +646,7 @@ class WebSocketHandler
             if ($existing) {
                 $existingSeat = json_decode($existing, true);
                 if (isset($existingSeat['user_id'])) {
-                    // Seat already taken � deny this request
+                    // Seat already taken — deny this request
                     if ($targetFd && $server->isEstablished($targetFd)) {
                         $server->push($targetFd, json_encode([
                             'type'       => 'seat.response',
@@ -778,7 +784,7 @@ class WebSocketHandler
         static::broadcastToRoom($server, $roomId, ['type' => 'seat.vacated', 'seat_index' => $seatIndex]);
     }
 
-    //  Room Ban 
+    // ── Room Ban ──────────────────────────────────────────────────────────────
 
     private static function handleRoomBan(Server $server, int $fd, array $conn, array $data): void
     {
@@ -808,7 +814,7 @@ class WebSocketHandler
         static::broadcastToRoom($server, $roomId, ['type' => 'mod.user_kicked', 'user_id' => $targetUserId]);
     }
 
-    //  Gifts 
+    // ── Gifts ─────────────────────────────────────────────────────────────────
 
     private static function handleGift(Server $server, int $fd, array $conn, array $data): void
     {
@@ -883,7 +889,7 @@ class WebSocketHandler
 
         $totalDiamonds      = ($gift->diamond_value ?? 0) * $quantity;
         $room               = \App\Models\Room::find($roomId);
-        // GiftService already credited diamonds to host � read actual DB balance
+        // GiftService already credited diamonds to host — read actual DB balance
         $hostDiamondBalance = $room
             ? (\App\Models\User::find($room->host_user_id)?->diamond_balance ?? 0)
             : 0;
@@ -909,7 +915,7 @@ class WebSocketHandler
             'coins'          => $coinValue,
         ]);
 
-        //  Global notification for big gifts (2000 coins) 
+        // ── Global notification for big gifts (≥2000 coins) ──────────────────
         if ($coinValue >= 2000) {
             $host = \App\Models\User::find($room?->host_user_id);
             static::broadcastGlobal($server, [
@@ -939,7 +945,7 @@ class WebSocketHandler
         }
     }
 
-    //  PK 
+    // ── PK ────────────────────────────────────────────────────────────────────
 
     private static function handlePkInvite(Server $server, int $fd, array $conn, array $data): void
     {
@@ -1064,7 +1070,7 @@ class WebSocketHandler
         ];
 
         // Each host gets a token to subscribe to the OPPONENT's channel
-        // Host stays on their own channel � no channel switching needed
+        // Host stays on their own channel — no channel switching needed
         $challengerRoom   = $invite['challenger_room'];
         $targetRoom       = $conn['room_id'];
 
@@ -1127,10 +1133,10 @@ class WebSocketHandler
         $session                    = json_decode($raw, true);
         $session['scores'][$roomId] = ($session['scores'][$roomId] ?? 0) + $coinValue;
 
-        // Track top gifters per room � keep top 3 by total coins
+        // Track top gifters per room — keep top 3 by total coins
         // Sender info is in the connection that triggered the gift
         // We pass sender info via static::$connections when updatePkScore is called
-        // For now track by userId{name,avatar,coins}
+        // For now track by userId→{name,avatar,coins}
         $ttl = Redis::ttl("pk:session:{$pkSessionId}");
         if ($ttl <= 0) $ttl = 360;
         Redis::setex("pk:session:{$pkSessionId}", $ttl, json_encode($session));
@@ -1184,7 +1190,7 @@ class WebSocketHandler
         Redis::setex("pk:session:{$pkSessionId}", $ttl, json_encode($session));
     }
 
-    //  Game Events 
+    // ── Game Events ───────────────────────────────────────────────────────────
 
     private static function handleGameEvent(Server $server, int $fd, array $conn, array $data): void
     {
@@ -1198,7 +1204,7 @@ class WebSocketHandler
         ], exclude: $fd);
     }
 
-    //  Moderation 
+    // ── Moderation ────────────────────────────────────────────────────────────
 
     private static function handleKick(Server $server, int $fd, array $conn, array $data): void
     {
@@ -1242,7 +1248,7 @@ class WebSocketHandler
         ], exclude: $fd);
     }
 
-    //  Ping 
+    // ── Ping ──────────────────────────────────────────────────────────────────
 
     private static function handlePing(Server $server, int $fd, array $conn): void
     {
@@ -1299,7 +1305,7 @@ class WebSocketHandler
         }
     }
 
-    //  PK Invite to User/Followers 
+    // ── PK Invite to User/Followers ───────────────────────────────────────────
 
     private static function handlePkInviteToUser(Server $server, int $fd, array $conn, array $data): void
     {
@@ -1371,7 +1377,7 @@ class WebSocketHandler
         try {
             \App\Models\Notification::create(['user_id' => $userId, 'type' => $type, 'data' => $data]);
             $notifService = app(\App\Services\NotificationService::class);
-            $title = $type === 'pk_invite' ? ' PK Battle Challenge' : 'New Notification';
+            $title = $type === 'pk_invite' ? '⚔ PK Battle Challenge' : 'New Notification';
             $body  = $data['message'] ?? 'You have a new notification';
             $notifService->sendToUser($userId, $title, $body, array_merge($data, ['type' => $type]));
         } catch (\Throwable $e) {
@@ -1379,7 +1385,7 @@ class WebSocketHandler
         }
     }
 
-    //  Video Call 
+    // ── Video Call ────────────────────────────────────────────────────────────
 
     private static function handleCallRequest(Server $server, int $fd, array $conn, array $data): void
     {
@@ -1434,7 +1440,7 @@ class WebSocketHandler
                 'camera_off' => true,
             ]));
 
-            // NOTE: host is NOT stored in call participants hash �
+            // NOTE: host is NOT stored in call participants hash —
             // host is shown as main video, not as a participant tile
             Redis::expire($callKey, 86400);
 
@@ -1497,7 +1503,7 @@ class WebSocketHandler
         static::broadcastToRoom($server, $roomId, ['type' => 'call.kicked', 'user_id' => $userId], exclude: $targetFd ?? -1);
     }
 
-    //  Background Change 
+    // ── Background Change ─────────────────────────────────────────────────────
 
     private static function handleBgChange(Server $server, int $fd, array $conn, array $data): void
     {
@@ -1515,7 +1521,7 @@ class WebSocketHandler
         static::broadcastToRoom($server, $roomId, ['type' => 'room.bg_change', 'bg_url' => $bgUrl]);
     }
 
-    //  Seat Emoji 
+    // ── Seat Emoji ───────────────────────────────────────────────────────────────
 
     private static function handleSeatEmoji(Server $server, int $fd, array $conn, array $data): void
     {
@@ -1545,7 +1551,7 @@ class WebSocketHandler
         ], exclude: $fd);
     }
 
-    //  Random PK Matchmaking 
+    // ── Random PK Matchmaking ────────────────────────────────────────────────────
 
     private static function handleRandomPkToggle(Server $server, int $fd, array $conn, array $data): void
     {
@@ -1558,7 +1564,7 @@ class WebSocketHandler
         if ($room?->host_user_id !== $conn['user_id']) return;
 
         if (! $enabled) {
-            // Host disabled � remove from pool and clear any pending state
+            // Host disabled — remove from pool and clear any pending state
             Redis::del("pk:random:{$roomType}:{$roomId}");
             Redis::del("pk:random:pending:{$roomId}");
             return;
@@ -1592,13 +1598,13 @@ class WebSocketHandler
         $tried    = json_decode(Redis::get($triedKey) ?? '[]', true) ?: [];
 
         // Map room type to DB column value
-        // Flutter sends 'video', 'audio', 'audioBoard' � DB stores 'video','audio','audio_board'
+        // Flutter sends 'video', 'audio', 'audioBoard' — DB stores 'video','audio','audio_board'
         $dbType = match($roomType) {
             'audioBoard' => 'audio_board',
             default      => $roomType,
         };
 
-        // Scan ALL live rooms of the same type � not just those with random PK on
+        // Scan ALL live rooms of the same type — not just those with random PK on
         $liveRooms = \App\Models\Room::where('status', 'live')
             ->where('type', $dbType)
             ->where('id', '!=', $roomId)
@@ -1645,7 +1651,7 @@ class WebSocketHandler
                 'room_type'         => $roomType,
             ]));
 
-            // Only TARGET host gets the invite popup � challenger just waits
+            // Only TARGET host gets the invite popup — challenger just waits
             $server->push($candidateFd, json_encode([
                 'type'               => 'pk.random_invite',
                 'pk_session_id'      => $pkSessionId,
@@ -1666,11 +1672,11 @@ class WebSocketHandler
             return; // Wait for response, then try next if declined
         }
 
-        // Exhausted all live rooms � clear tried so next toggle starts fresh
+        // Exhausted all live rooms — clear tried so next toggle starts fresh
         Redis::del($triedKey);
     }
 
-    //  Screen Share 
+    // ── Screen Share ─────────────────────────────────────────────────────────────
 
     private static function handleScreenShare(Server $server, int $fd, array $conn, array $data): void
     {
@@ -1699,7 +1705,7 @@ class WebSocketHandler
         ], exclude: $fd);
     }
 
-    //  Party Video Events 
+    // ── Party Video Events ───────────────────────────────────────────────────────
 
     private static function handleVideoEvent(Server $server, int $fd, array $conn, array $data): void
     {
@@ -1737,7 +1743,7 @@ class WebSocketHandler
         ]);
     }
 
-    //  Helpers 
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static function broadcastToRoom(
         Server $server,
@@ -1759,7 +1765,7 @@ class WebSocketHandler
             }
         }
 
-        // During PK � also broadcast to the opponent room (opt-out for PK system events)
+        // During PK — also broadcast to the opponent room (opt-out for PK system events)
         // so audiences of both rooms share unified chat, gifts, animations
         if ($crossBroadcast) { $pkSessionId = Redis::get("pk:room:{$roomId}");
         if ($pkSessionId) {
@@ -1811,10 +1817,12 @@ class WebSocketHandler
         $fds = Redis::smembers("ws:user:{$userId}:fds");
         foreach ($fds as $fd) {
             $fd = (int) $fd;
-            if ($server && !$server->isEstablished($fd)) {
-                // Stale fd � clean up
+            $established = $server ? $server->isEstablished($fd) : isset(static::$connections[$fd]);
+            if (! $established) {
+                // Stale fd — clean up
                 Redis::srem("ws:user:{$userId}:fds", $fd);
                 Redis::del("ws:fd:{$fd}:user");
+                unset(static::$connections[$fd]);
                 continue;
             }
             return $fd;

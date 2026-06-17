@@ -47,6 +47,8 @@ Route::prefix('v1')->group(function () {
     Route::get('app/version', [AppVersionController::class, 'check']);
     Route::get('app/config',        [AppConfigController::class,    'config']);
     Route::get('coin-sellers/public', [CoinSellerApiController::class, 'index']);
+    Route::get('popup-banners/active', fn() =>
+        response()->json(\App\Models\PopupBanner::getActiveBanners())); // public — no auth needed
 
 
     
@@ -195,5 +197,22 @@ Route::prefix('v1')->group(function () {
         Route::post  ('admin/backgrounds/upload-url',  [MediaController::class, 'backgroundUploadUrl']);
         Route::post  ('admin/backgrounds',             [MediaController::class, 'saveBackground']);
         Route::delete('admin/backgrounds/{id}',        [MediaController::class, 'deleteBackground']);
+
+        // ── Daily live reward — manual collect ───────────────────────────────
+        Route::get ('daily-reward',         [DailyRewardController::class, 'status']);
+        Route::post('daily-reward/collect', [DailyRewardController::class, 'collect']);
+
+        // ── Diamond ↔ Coin exchange ───────────────────────────────────────────
+        Route::get ('exchange/rate',     [\App\Http\Controllers\Api\ExchangeController::class, 'rate']);
+        Route::post('exchange/diamonds', [\App\Http\Controllers\Api\ExchangeController::class, 'exchange']);
+
+        // ── Level info ───────────────────────────────────────────────────────
+        Route::get('level/info', [\App\Http\Controllers\Api\LevelController::class, 'info']);
+
+        // ── Frames — shop and inventory ──────────────────────────────────────
+        Route::get ('frames/shop',      [\App\Http\Controllers\Api\FrameController::class, 'shop']);
+        Route::get ('frames/inventory', [\App\Http\Controllers\Api\FrameController::class, 'inventory']);
+        Route::post('frames/buy',       [\App\Http\Controllers\Api\FrameController::class, 'buy']);
+        Route::post('frames/apply',     [\App\Http\Controllers\Api\FrameController::class, 'apply']);
     });
 });

@@ -5,8 +5,6 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Room\CreateRoomRequest;
 use App\Jobs\NotifyFollowersLiveJob;
-use App\Models\LiveReward;
-use App\Models\CoinTransaction;
 use App\Models\Room;
 use App\Services\AgoraService;
 use App\Services\BanService;
@@ -191,61 +189,11 @@ class RoomController extends Controller
 
         $host->update($updates);
 
-        // ── Immediate live reward on manual end ──────────────────────────
-        // Credit immediately if eligible. CreditLiveRewardJob will skip
-        // this user because alreadyRewarded pre-check finds the record.
-        // Race condition: unique(user_id, reward_date) constraint is the
-        // hard lock — UniqueConstraintViolationException caught silently.
-        $diamondReward = 0;
-
-        if ($durationMins >= 40 && $room->type === 'video') {
-            $today = now()->toDateString();
-
-            $alreadyCredited = LiveReward::where('user_id', $host->id)
-                ->where('reward_date', $today)
-                ->exists();
-
-            if (! $alreadyCredited) {
-                try {
-                    DB::transaction(function () use ($host, $room, $today, &$diamondReward) {
-                        $rewardAmount = (int) config('wallet.live_reward_diamonds', 5000);
-
-                        LiveReward::create([
-                            'user_id'     => $host->id,
-                            'reward_date' => $today,
-                            'room_id'     => $room->id,
-                            'amount'      => $rewardAmount,
-                        ]);
-
-                        $host->increment('diamond_balance', $rewardAmount);
-                        $newBalance = $host->fresh()->diamond_balance;
-
-                        CoinTransaction::create([
-                            'user_id'       => $host->id,
-                            'type'          => 'live_reward',
-                            'amount'        => $rewardAmount,
-                            'balance_after' => $newBalance,
-                            'reference'     => "live_reward:room:{$room->id}:{$today}",
-                        ]);
-
-                        $diamondReward = $rewardAmount;
-                    });
-                } catch (\Illuminate\Database\UniqueConstraintViolationException $e) {
-                    // CreditLiveRewardJob won the race — reward already credited
-                    $diamondReward = (int) config('wallet.live_reward_diamonds', 5000);
-                } catch (\Exception $e) {
-                    \Illuminate\Support\Facades\Log::error("Immediate reward failed: " . $e->getMessage());
-                }
-            } else {
-                $diamondReward = LiveReward::where('user_id', $host->id)->where('reward_date', $today)->value('amount') ?? (int) config('wallet.live_reward_diamonds', 5000);
-            }
-        }
-
+        // No auto reward — user collects reward manually from daily reward screen
         return response()->json([
-            'message'        => 'Room ended.',
-            'duration_mins'  => $durationMins,
-            'diamond_reward' => $diamondReward,
-            'summary'        => $this->roomService->getSummary($room),
+            'message'       => 'Room ended.',
+            'duration_mins' => $durationMins,
+            'summary'       => $this->roomService->getSummary($room),
         ]);
     }
 

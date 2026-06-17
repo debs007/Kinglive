@@ -206,10 +206,19 @@
     <a href="{{ route('admin.banners.index') }}" class="nav-item {{ request()->routeIs('admin.banners.*') ? 'active' : '' }}">
         <span>🖼</span> Banners
     </a>
+    <a href="{{ route('admin.popup_banners.index') }}" class="nav-item {{ request()->routeIs('admin.popup_banners.*') ? 'active' : '' }}">
+        <span>📢</span> Popup Banners
+    </a>
 
     <div class="nav-section">Coin Sellers</div>
-    <a href="{{ route('admin.coin_sellers.index') }}" class="nav-item {{ request()->routeIs('admin.coin_sellers.*') ? 'active' : '' }}">
+    <a href="{{ route('admin.coin_sellers.index') }}" class="nav-item {{ request()->routeIs('admin.coin_sellers.index') ? 'active' : '' }}">
         <span>🪙</span> Coin Sellers
+    </a>
+    <a href="{{ route('admin.coin_sellers.grant_summary') }}" class="nav-item {{ request()->routeIs('admin.coin_sellers.grant_summary') ? 'active' : '' }}">
+        <span>🏦</span> Seller Grants
+    </a>
+    <a href="{{ route('admin.coin_sellers.transactions') }}" class="nav-item {{ request()->routeIs('admin.coin_sellers.transactions') ? 'active' : '' }}">
+        <span>📊</span> All Transactions
     </a>
 
     <div class="nav-section">Agencies</div>

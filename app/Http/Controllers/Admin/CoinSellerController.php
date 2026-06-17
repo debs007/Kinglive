@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\CoinSeller;
+use App\Models\CoinTransaction;
 use App\Models\CoinSellerTransaction;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -45,9 +46,22 @@ class CoinSellerController extends Controller
 
     public function addCoins(Request $request, int $id)
     {
-        $request->validate(['coins' => ['required', 'integer', 'min:1']]);
+        $request->validate([
+            'coins' => ['required', 'integer', 'min:1'],
+            'note'  => ['nullable', 'string', 'max:255'],
+        ]);
         $seller = CoinSeller::findOrFail($id);
         $seller->increment('coin_balance', $request->coins);
+
+        // Record admin stock grant so we can track history per seller
+        CoinSellerTransaction::create([
+            'coin_seller_id' => $seller->id,
+            'user_id'        => null, // given to seller as stock, not a user
+            'coins'          => $request->coins,
+            'type'           => 'admin_grant',
+            'note'           => $request->note ?? 'Admin stock grant by ' . auth()->user()?->username,
+        ]);
+
         return back()->with('success', "Added {$request->coins} coins to {$seller->name}.");
     }
 
@@ -88,19 +102,111 @@ class CoinSellerController extends Controller
         return back()->with('success', "Added {$request->coins} coins to {$user->username}.");
     }
 
+    public function sellerGrantSummary(Request $request)
+    {
+        $from = $request->input('from');
+        $to   = $request->input('to');
+
+        // Per-seller totals of admin grants
+        $sellers = CoinSeller::withSum([
+                'transactions as total_granted' => fn($q) => $q
+                    ->where('type', 'admin_grant')
+                    ->when($from, fn($q) => $q->where('created_at', '>=',
+                        \Carbon\Carbon::parse($from)->startOfDay()))
+                    ->when($to,   fn($q) => $q->where('created_at', '<=',
+                        \Carbon\Carbon::parse($to)->endOfDay())),
+            ], 'coins')
+            ->withCount([
+                'transactions as grant_count' => fn($q) => $q
+                    ->where('type', 'admin_grant')
+                    ->when($from, fn($q) => $q->where('created_at', '>=',
+                        \Carbon\Carbon::parse($from)->startOfDay()))
+                    ->when($to,   fn($q) => $q->where('created_at', '<=',
+                        \Carbon\Carbon::parse($to)->endOfDay())),
+            ])
+            ->orderByDesc('total_granted')
+            ->get();
+
+        $grandTotal = $sellers->sum('total_granted');
+
+        // Recent grants per seller for detail
+        $recentGrants = CoinSellerTransaction::with(['seller:id,name'])
+            ->where('type', 'admin_grant')
+            ->whereNotNull('coin_seller_id')
+            ->when($from, fn($q) => $q->where('created_at', '>=',
+                \Carbon\Carbon::parse($from)->startOfDay()))
+            ->when($to,   fn($q) => $q->where('created_at', '<=',
+                \Carbon\Carbon::parse($to)->endOfDay()))
+            ->when($request->seller_id,
+                fn($q) => $q->where('coin_seller_id', $request->seller_id))
+            ->latest()
+            ->paginate(50);
+
+        return view('admin.coin_sellers.grant_summary',
+            compact('sellers', 'grandTotal', 'recentGrants'));
+    }
+
     public function transactions(Request $request)
     {
-        $transactions = CoinSellerTransaction::with([
-                'seller:id,name',
-                'user:id,username,avatar_url',
+        $from = $request->input('from');
+        $to   = $request->input('to');
+        $type = $request->input('type'); // all | admin_credit | recharge | adjustment | coin_seller
+        $search = $request->input('search');
+
+        // ── ALL admin-related transactions from CoinTransaction table ─────────
+        // Includes: admin_credit, recharge (with admin_adjustment reference),
+        // live_reward (manual admin credits), coin seller grants
+        $query = \App\Models\CoinTransaction::with([
+                'user:id,username,display_name,avatar_url',
             ])
-            ->when($request->seller_id, fn($q) => $q->where('coin_seller_id', $request->seller_id))
-            ->when($request->type,      fn($q) => $q->where('type', $request->type))
-            ->latest()
-            ->paginate(30);
+            ->where(function ($q) {
+                $q->where('type', 'admin_credit')  // WalletService direct credits
+                  ->orWhere('type', 'live_reward')  // manual live reward credits
+                  ->orWhere(function ($q2) {
+                      // admin adjustments (add OR deduct) stored as 'recharge'
+                      $q2->where('type', 'recharge')
+                         ->where('reference', 'like', 'admin_adjustment:%');
+                  })
+                  ->orWhere(function ($q2) {
+                      // coin seller top-ups stored as 'recharge'
+                      $q2->where('type', 'recharge')
+                         ->where('reference', 'like', 'coin_seller:%');
+                  });
+            })
+            ->when($from, fn($q) => $q->where('created_at', '>=',
+                \Carbon\Carbon::parse($from)->startOfDay()))
+            ->when($to,   fn($q) => $q->where('created_at', '<=',
+                \Carbon\Carbon::parse($to)->endOfDay()))
+            ->when($search, fn($q) => $q->whereHas('user', fn($u) =>
+                $u->where('username', 'like', "%{$search}%")
+                  ->orWhere('display_name', 'like', "%{$search}%")
+            ));
 
-        $sellers = CoinSeller::orderBy('name')->get(['id', 'name']);
+        // Type sub-filter
+        if ($type === 'admin_credit') {
+            // Admin additions only (positive amount, admin_adjustment reference)
+            $query->where('type', 'recharge')
+                  ->where('reference', 'like', 'admin_adjustment:%')
+                  ->where('amount', '>', 0);
+        } elseif ($type === 'adjustment') {
+            // Deductions only (negative amount)
+            $query->where('type', 'recharge')
+                  ->where('reference', 'like', 'admin_adjustment:%')
+                  ->where('amount', '<', 0);
+        } elseif ($type === 'live_reward') {
+            $query->where('type', 'live_reward');
+        } elseif ($type === 'coin_seller') {
+            $query->where('type', 'recharge')
+                  ->where('reference', 'like', 'coin_seller:%');
+        }
 
-        return view('admin.coin_sellers.transactions', compact('transactions', 'sellers'));
+        $totalCoinsAll = (clone $query)->sum('amount');
+        $totalCountAll = (clone $query)->count();
+
+        $transactions = $query->latest()->paginate(50);
+        $sellers      = CoinSeller::orderBy('name')->get(['id', 'name']);
+
+        return view('admin.coin_sellers.transactions',
+            compact('transactions', 'sellers', 'totalCoinsAll', 'totalCountAll'));
     }
 }

@@ -13,74 +13,93 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 
 /**
- * Finds live rooms whose host has missed heartbeats for too long.
- * Runs every minute via the scheduler.
+ * Runs every minute. Ends rooms whose host has disappeared.
  *
- * A room ends ONLY when:
- *   - Host heartbeat has been missing for > 5 minutes (HEARTBEAT_TIMEOUT)
- *   - Room started > 2 minutes ago (grace period for new streams)
+ * Handles two scenarios:
  *
- * Rooms do NOT end because of:
- *   - Zero viewers (host can stream with no audience)
- *   - WS disconnect (handled by EndHostRoomJob grace period)
- *   - Participant/audience leaving (they just leave, room stays)
+ * A) NORMAL: heartbeat key exists but is old = host stopped sending
+ *    → end after HEARTBEAT_TIMEOUT (5 min)
+ *
+ * B) POST-RESTART: heartbeat key missing (expired during server downtime)
+ *    AND room has been "live" for longer than ORPHAN_TIMEOUT (10 min)
+ *    → end it — host is clearly not there anymore
+ *
+ * Also broadcasts room.ended via ws:pending_broadcasts so the home screen
+ * removes the room in real-time.
  */
 class CleanupStaleRoomsJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    // Host must miss heartbeats for 5 minutes before room is ended
-    // Flutter sends heartbeat every 30s — 5 min = 10 missed beats
-    private const HEARTBEAT_TIMEOUT = 300; // 5 minutes
-
-    // Don't check rooms that just started
-    private const GRACE_PERIOD = 120; // 2 minutes
+    private const HEARTBEAT_TIMEOUT = 300;  // 5 min — normal stale detection
+    private const ORPHAN_TIMEOUT    = 600;  // 10 min — no heartbeat key at all (post-restart)
+    private const GRACE_PERIOD      = 120;  // 2 min — don't touch brand-new rooms
 
     public function handle(LiveRoomService $roomService): void
     {
         $liveRooms = Room::where('status', 'live')
             ->where('started_at', '<=', now()->subSeconds(self::GRACE_PERIOD))
-            ->get(['id', 'host_user_id', 'title', 'type']);
+            ->get(['id', 'host_user_id', 'started_at', 'title', 'type']);
 
         foreach ($liveRooms as $room) {
-            // Clean stale seats (user disconnected but still in seat)
             $this->cleanStaleSeats($room->id);
 
-            // Only end room if heartbeat has been missing for too long
-            // Never end room just because viewers = 0
-            if ($this->isHeartbeatStaleTooLong($room->id)) {
-                Log::info("CleanupStaleRooms: ending room {$room->id} — heartbeat missing > " . self::HEARTBEAT_TIMEOUT . "s");
+            if ($this->shouldEndRoom($room)) {
+                Log::info("CleanupStaleRooms: ending room {$room->id} ({$room->title})");
                 $room->update(['status' => 'ended', 'ended_at' => now()]);
                 $roomService->cleanupRoom($room->id);
+
+                // Broadcast room.ended so home screen removes it in real-time
+                Redis::lpush('ws:pending_broadcasts', json_encode([
+                    'rooms'   => ['__global__'],
+                    'payload' => json_encode([
+                        'type'    => 'room.removed',
+                        'room_id' => $room->id,
+                    ]),
+                    'expires' => time() + 30,
+                ]));
             }
         }
     }
 
-    private function isHeartbeatStaleTooLong(string $roomId): bool
+    private function shouldEndRoom(Room $room): bool
     {
-        $lastBeat = Redis::get("room:{$roomId}:host_heartbeat");
+        $lastBeat = Redis::get("room:{$room->id}:host_heartbeat");
 
-        // No heartbeat key ever set — host may not have the heartbeat feature
-        // Don't end the room, just let CreditLiveRewardJob/EndHostRoomJob handle it
-        if ($lastBeat === null) {
+        if ($lastBeat !== null) {
+            // Heartbeat key exists — check if it's too old
+            $secondsAgo = time() - (int) $lastBeat;
+            if ($secondsAgo > self::HEARTBEAT_TIMEOUT) {
+                Log::info("CleanupStaleRooms: heartbeat stale {$secondsAgo}s ago room={$room->id}");
+                return true;
+            }
             return false;
         }
 
-        $secondsAgo = time() - (int) $lastBeat;
-        return $secondsAgo > self::HEARTBEAT_TIMEOUT;
+        // No heartbeat key — could be:
+        // 1. Host never updated (old app version without heartbeat feature)
+        // 2. Key expired after server restart
+        // If room has been "live" for > ORPHAN_TIMEOUT with no heartbeat — end it
+        $minutesLive = (int) $room->started_at->diffInMinutes(now());
+        if ($minutesLive >= (self::ORPHAN_TIMEOUT / 60)) {
+            Log::info("CleanupStaleRooms: orphaned room {$room->id} — no heartbeat, live {$minutesLive}min");
+            return true;
+        }
+
+        return false;
     }
 
     private function cleanStaleSeats(string $roomId): void
     {
-        $seats = Redis::hgetall("room:{$roomId}:seats") ?: [];
+        $seats   = Redis::hgetall("room:{$roomId}:seats") ?: [];
+        $roomFds = Redis::smembers("room:{$roomId}:fds") ?: [];
+
         foreach ($seats as $seatIdx => $seatJson) {
             $seatData   = json_decode($seatJson, true);
             if (! isset($seatData['user_id'])) continue;
             $seatUserId = (int) $seatData['user_id'];
-
-            $userFds = Redis::smembers("ws:user:{$seatUserId}:fds") ?: [];
-            $roomFds = Redis::smembers("room:{$roomId}:fds") ?: [];
-            $inRoom  = ! empty(array_intersect($userFds, $roomFds));
+            $userFds    = Redis::smembers("ws:user:{$seatUserId}:fds") ?: [];
+            $inRoom     = ! empty(array_intersect($userFds, $roomFds));
 
             if (! $inRoom) {
                 Redis::hdel("room:{$roomId}:seats", $seatIdx);

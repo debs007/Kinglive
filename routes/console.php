@@ -6,7 +6,8 @@ use Illuminate\Support\Facades\Schedule;
 Schedule::job(new \App\Jobs\AutoExpireBansJob)->everyFiveMinutes();
 
 Schedule::job(new \App\Jobs\CleanupStaleRoomsJob)->everyMinute();
-Schedule::job(new \App\Jobs\CreditLiveRewardJob)->everyMinute();
+// CreditLiveRewardJob disabled — rewards are now collected manually by users
+// Schedule::job(new \App\Jobs\CreditLiveRewardJob)->everyMinute();
 
 // Monthly reset — 1st of every month at midnight
 // Snapshots all host stats then resets monthly counters

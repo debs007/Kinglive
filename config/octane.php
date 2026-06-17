@@ -53,6 +53,11 @@ return [
 
             // Keep-alive
             'open_tcp_keepalive'  => true,
+            
+            //enabling heartbeat system
+            'heartbeat_check_interval' => 60,    // check every 60s
+            'heartbeat_idle_time'      => 180,   // close if no data for 3 min            
+            
             'tcp_keepidle'        => 60,
             'tcp_keepinterval'    => 10,
             'tcp_keepcount'       => 3,

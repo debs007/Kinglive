@@ -97,7 +97,7 @@
                         style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px">
                 </div>
                 {{-- preserve other filters --}}
-                @foreach(request()->except(['coin_from','coin_to','coin_recharge_page','coin_gift_page','coin_game_page']) as $k => $v)
+                @foreach(request()->except(['coin_from','coin_to','coin_recharge_page','coin_gift_page','coin_game_page','coin_exchange_page']) as $k => $v)
                     <input type="hidden" name="{{ $k }}" value="{{ $v }}">
                 @endforeach
                 <button type="submit" class="btn-primary" style="font-size:12px;padding:7px 16px">Filter</button>
@@ -117,6 +117,7 @@
                     ['recharge', '💳 Recharge', $coinRecharge->total()],
                     ['gifting',  '🎁 Gifting',  $coinGifting->total()],
                     ['games',    '🎮 Games',     $coinGames->total()],
+                    ['exchange', '🔄 From Diamonds', $coinExchange->total()],
                 ]; @endphp
                 @foreach($coinTabs as $i => $ctab)
                 <button
@@ -142,6 +143,10 @@
             <div id="coin-pane-games" style="display:none">
                 @include('admin.users._txn_table', ['rows' => $coinGames, 'type' => 'coin', 'page_param' => 'coin_game_page'])
             </div>
+            {{-- Exchange (coins received from diamonds) --}}
+            <div id="coin-pane-exchange" style="display:none">
+                @include('admin.users._txn_table', ['rows' => $coinExchange, 'type' => 'coin', 'page_param' => 'coin_exchange_page'])
+            </div>
         </div>
 
         {{-- ── Diamond Transactions ───────────────────────────────── --}}
@@ -159,7 +164,7 @@
                     <input type="date" name="diamond_to" value="{{ request('diamond_to') }}"
                         style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px">
                 </div>
-                @foreach(request()->except(['diamond_from','diamond_to','diamond_gift_page','diamond_reward_page']) as $k => $v)
+                @foreach(request()->except(['diamond_from','diamond_to','diamond_gift_page','diamond_reward_page','diamond_exchange_page']) as $k => $v)
                     <input type="hidden" name="{{ $k }}" value="{{ $v }}">
                 @endforeach
                 <button type="submit" class="btn-primary" style="font-size:12px;padding:7px 16px">Filter</button>
@@ -172,6 +177,7 @@
                 @php $dTabs = [
                     ['dgifts',   '🎁 Gift Received', $diamondGifts->total()],
                     ['drewards', '🏆 Daily Rewards',  $diamondRewards->total()],
+                    ['dexchange','🔄 To Coins',       $diamondExchange->total()],
                 ]; @endphp
                 @foreach($dTabs as $i => $dtab)
                 <button
@@ -190,6 +196,9 @@
             </div>
             <div id="diamond-pane-drewards" style="display:none">
                 @include('admin.users._txn_table', ['rows' => $diamondRewards, 'type' => 'diamond', 'page_param' => 'diamond_reward_page'])
+            </div>
+            <div id="diamond-pane-dexchange" style="display:none">
+                @include('admin.users._txn_table', ['rows' => $diamondExchange, 'type' => 'diamond', 'page_param' => 'diamond_exchange_page'])
             </div>
         </div>
 
@@ -453,7 +462,7 @@
 
 <script>
 function switchCoinTab(tab) {
-    ['recharge','gifting','games'].forEach(t => {
+    ['recharge','gifting','games','exchange'].forEach(t => {
         document.getElementById('coin-pane-' + t).style.display = t === tab ? '' : 'none';
         const btn = document.getElementById('coin-tab-' + t);
         btn.style.borderBottomColor = t === tab ? 'var(--gold)' : 'transparent';
@@ -498,7 +507,7 @@ async function creditReward(userId, date, roomId) {
 }
 
 function switchDiamondTab(tab) {
-    ['dgifts','drewards'].forEach(t => {
+    ['dgifts','drewards','dexchange'].forEach(t => {
         document.getElementById('diamond-pane-' + t).style.display = t === tab ? '' : 'none';
         const btn = document.getElementById('diamond-tab-' + t);
         btn.style.borderBottomColor = t === tab ? 'var(--info)' : 'transparent';

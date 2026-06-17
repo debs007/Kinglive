@@ -135,10 +135,20 @@ class UserController extends Controller
             ->when($coinFrom || $coinTo, fn($q) => $dateFilter($q, $coinFrom, $coinTo))
             ->latest()->paginate(20, ['*'], 'coin_gift_page');
 
+        // Match the exact type list the app's own TransactionController uses
+        // (BaishunGameController::changeBalance writes 'game_bet'/'game_reward';
+        // legacy/other paths may also write 'game', 'game_win', 'game_loss')
         $coinGames = \App\Models\CoinTransaction::where('user_id', $id)
-            ->where('type', 'game')
+            ->whereIn('type', ['game', 'game_win', 'game_loss', 'game_bet', 'game_reward'])
             ->when($coinFrom || $coinTo, fn($q) => $dateFilter($q, $coinFrom, $coinTo))
             ->latest()->paginate(20, ['*'], 'coin_game_page');
+
+        // Coins RECEIVED from diamond→coin exchange (positive amount, type=exchange)
+        $coinExchange = \App\Models\CoinTransaction::where('user_id', $id)
+            ->where('type', 'exchange')
+            ->where('amount', '>', 0) // coin credit side only, not the diamond debit
+            ->when($coinFrom || $coinTo, fn($q) => $dateFilter($q, $coinFrom, $coinTo))
+            ->latest()->paginate(20, ['*'], 'coin_exchange_page');
 
         // ── Diamond Transactions ──────────────────────────────────────────
         $diamondGifts = \App\Models\CoinTransaction::where('user_id', $id)
@@ -151,6 +161,13 @@ class UserController extends Controller
             ->where('type', 'live_reward')
             ->when($diamondFrom || $diamondTo, fn($q) => $dateFilter($q, $diamondFrom, $diamondTo))
             ->latest()->paginate(20, ['*'], 'diamond_reward_page');
+
+        // Diamonds SPENT on exchange (negative amount, type=exchange)
+        $diamondExchange = \App\Models\CoinTransaction::where('user_id', $id)
+            ->where('type', 'exchange')
+            ->where('amount', '<', 0) // diamond debit side only, not the coin credit
+            ->when($diamondFrom || $diamondTo, fn($q) => $dateFilter($q, $diamondFrom, $diamondTo))
+            ->latest()->paginate(20, ['*'], 'diamond_exchange_page');
 
         // ── Past Lives ────────────────────────────────────────────────────
         $pastLives = \App\Models\Room::where('host_user_id', $id)
@@ -258,8 +275,8 @@ class UserController extends Controller
 
         return view('admin.users.show', compact(
             'user', 'topGifts',
-            'coinRecharge', 'coinGifting', 'coinGames',
-            'diamondGifts', 'diamondRewards',
+            'coinRecharge', 'coinGifting', 'coinGames', 'coinExchange',
+            'diamondGifts', 'diamondRewards', 'diamondExchange',
             'pastLives',
             'dmMessages', 'dmConversations'
         ));

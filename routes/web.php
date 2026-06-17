@@ -163,6 +163,7 @@ Route::prefix('admin')->name('admin.')->group(function () {
         Route::delete('coin-sellers/{id}',               [CoinSellerController::class, 'destroy'])->name('coin_sellers.destroy');
         Route::post  ('coin-sellers/give-to-user',       [CoinSellerController::class, 'giveCoinsToUser'])->name('coin_sellers.give_to_user');
         Route::get   ('coin-sellers/transactions',       [CoinSellerController::class, 'transactions'])->name('coin_sellers.transactions');
+        Route::get   ('coin-sellers/grant-summary',      [CoinSellerController::class, 'sellerGrantSummary'])->name('coin_sellers.grant_summary');
 
         // Banners
         Route::get   ('banners',              [BannerController::class, 'index'])->name('banners.index');
