@@ -33,6 +33,25 @@ class WebSocketHandler
 
         try {
             $user = JWTAuth::setToken($token)->authenticate();
+        } catch (\Tymon\JWTAuth\Exceptions\TokenExpiredException $e) {
+            // Token expired — try to refresh it silently
+            // This handles network drops / WiFi switches where reconnect
+            // happens after the token's TTL window
+            try {
+                $newToken = JWTAuth::refresh($token);
+                $user     = JWTAuth::setToken($newToken)->authenticate();
+                // Tell client to save the new token
+                $server->push($fd, json_encode([
+                    'type'  => 'token.refreshed',
+                    'token' => $newToken,
+                ]));
+                Log::info("WS: token refreshed on reconnect fd={$fd}");
+            } catch (\Throwable $refreshErr) {
+                Log::warning("WS token refresh failed fd={$fd}: " . $refreshErr->getMessage());
+                $server->push($fd, json_encode(['type' => 'error', 'message' => 'Session expired. Please login again.']));
+                $server->close($fd);
+                return;
+            }
         } catch (\Throwable $e) {
             Log::warning("WS auth failed fd={$fd}: " . $e->getMessage());
             $server->push($fd, json_encode(['type' => 'error', 'message' => 'Unauthorized.']));
@@ -122,6 +141,7 @@ class WebSocketHandler
                 'room.bg_change'      => static::handleBgChange($server, $fd, $conn, $data),
                 'seat.emoji'          => static::handleSeatEmoji($server, $fd, $conn, $data),
                 'seat.mute_request'   => static::handleSeatMuteRequest($server, $fd, $conn, $data),
+                'room.assign_admin'   => static::handleAssignRoomAdmin($server, $fd, $conn, $data),
                 'room.auto_join'      => static::handleAutoJoin($server, $fd, $conn, $data),
                 'room.seat_count'     => static::handleSeatCount($server, $fd, $conn, $data),
                 'seat.auto_take'      => static::handleSeatAutoTake($server, $fd, $conn, $data),
@@ -333,14 +353,32 @@ class WebSocketHandler
         // Get current seat count — use Redis value (may have been increased at runtime)
         $seatCount = (int) (Redis::get("room:{$roomId}:seat_count") ?? $room?->seat_count ?? 8);
 
+        // Get seat gift totals for audio board late joiners
+        $seatGiftKeys  = Redis::keys("room:{$roomId}:seat_gifts:*");
+        $seatGiftTotals = [];
+        foreach ($seatGiftKeys as $key) {
+            $userId = (int) str_replace("room:{$roomId}:seat_gifts:", '', $key);
+            $seatGiftTotals[$userId] = (int) Redis::get($key);
+        }
+
+        // Get host frame_url — from live connection or DB fallback
+        $hostUserId  = $room?->host_user_id;
+        $hostFd      = $hostUserId ? static::getFdByUserId($hostUserId) : null;
+        $hostConn    = ($hostFd && isset(static::$connections[$hostFd]))
+            ? static::$connections[$hostFd] : null;
+        $hostFrameUrl = $hostConn['frame_url'] ?? $room?->host?->frame_url ?? null;
+
         $server->push($fd, json_encode([
             'type'              => 'room.state',
             'room_id'           => $roomId,
             'viewer_count'      => (int) Redis::get("room:{$roomId}:viewers"),
             'recent_chat'       => array_values($chat),
             'seats'             => $seatsObj,
-            'seat_count'        => $seatCount,  // late joiners get current seat count
+            'seat_count'        => $seatCount,
             'auto_join'         => Redis::get("room:{$roomId}:auto_join") === '1',
+            'host_frame_url'    => $hostFrameUrl,
+            'room_admin_id'     => (int) (Redis::get("room:{$roomId}:admin") ?? 0),
+            'seat_gift_totals'  => $seatGiftTotals, // per-user gift totals this session
             'call_participants' => $callParticipants,
             'current_bg_url'    => $currentBgUrl,
             'screen_share'      => $screenShare,
@@ -869,6 +907,23 @@ class WebSocketHandler
             'coin_balance' => $result['new_balance'],
             'level'        => $result['current_level'],
         ]));
+
+        // Issue 3: Track per-seat gift totals in Redis (audio party board)
+        // Allows late joiners to see how much each seated user received in this session
+        if ($targetUserId && $roomId) {
+            $giftKey = "room:{$roomId}:seat_gifts:{$targetUserId}";
+            $coinTotal = ($result['coin_total'] ?? 0);
+            if ($coinTotal > 0) {
+                Redis::incrby($giftKey, $coinTotal);
+                Redis::expire($giftKey, 86400); // expire after 24h (room session)
+                // Broadcast updated gift total to all in room
+                static::broadcastToRoom($server, $roomId, [
+                    'type'        => 'seat.gifts.update',
+                    'user_id'     => $targetUserId,
+                    'total_coins' => (int) Redis::get($giftKey),
+                ]);
+            }
+        }
 
         // Notify sender of level up
         if (! empty($result['new_level'])) {
@@ -1522,6 +1577,204 @@ class WebSocketHandler
     }
 
     // ── Seat Emoji ───────────────────────────────────────────────────────────────
+
+    // ── Room Admin Assignment (host only) ───────────────────────────────────────
+    // Host can grant/revoke room admin status to any co-host in seat
+    // Room admin gets: join request popup, song control, mute/kick co-hosts
+    private static function handleAssignRoomAdmin(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId    = $conn['room_id'];
+        $room      = \App\Models\Room::find($roomId);
+        if (! $roomId || $room?->host_user_id !== $conn['user_id']) return;
+
+        $targetUserId = (int) ($data['user_id'] ?? 0);
+        $grant        = (bool) ($data['grant']    ?? true); // true=grant, false=revoke
+
+        // Store room admin in Redis
+        $adminKey = "room:{$roomId}:admin";
+        if ($grant) {
+            Redis::set($adminKey, $targetUserId);
+        } else {
+            // Only revoke if this user IS the current admin
+            if (Redis::get($adminKey) == $targetUserId) {
+                Redis::del($adminKey);
+            }
+        }
+
+        // Notify the target user of their new status
+        $targetFd = static::getFdByUserId($targetUserId);
+        if ($targetFd && $server->isEstablished($targetFd)) {
+            $server->push($targetFd, json_encode([
+                'type'       => 'room.admin.status',
+                'is_admin'   => $grant,
+                'granted_by' => $conn['username'],
+            ]));
+        }
+
+        // Broadcast to room so everyone sees the admin badge
+        static::broadcastToRoom($server, $roomId, [
+            'type'       => 'room.admin.changed',
+            'user_id'    => $targetUserId,
+            'is_admin'   => $grant,
+        ]);
+
+        Log::info("RoomAdmin: user={$targetUserId} grant={$grant} room={$roomId}");
+    }
+
+    // ── Mute specific co-host (host only, global) ────────────────────────────
+    private static function handleSeatMuteRequest(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId = $conn['room_id'];
+        $room   = \App\Models\Room::find($roomId);
+        if (! $roomId || $room?->host_user_id !== $conn['user_id']) return;
+
+        $targetUserId = (int) ($data['user_id'] ?? 0);
+        $mute         = (bool) ($data['mute']    ?? true);
+
+        // Send force mute to target user directly
+        $targetFd = static::getFdByUserId($targetUserId);
+        if ($targetFd && $server->isEstablished($targetFd)) {
+            $server->push($targetFd, json_encode([
+                'type'    => 'seat.force_mute',
+                'user_id' => $targetUserId,
+                'mute'    => $mute,
+            ]));
+        }
+
+        // Broadcast muted indicator to room
+        static::broadcastToRoom($server, $roomId, [
+            'type'       => 'seat.muted',
+            'seat_index' => static::getUserSeatIndex($roomId, $targetUserId),
+            'user_id'    => $targetUserId,
+            'is_muted'   => $mute,
+        ]);
+    }
+
+    private static function getUserSeatIndex(string $roomId, int $userId): int
+    {
+        $seats = Redis::hgetall("room:{$roomId}:seats") ?: [];
+        foreach ($seats as $idx => $seatJson) {
+            $seat = json_decode($seatJson, true);
+            if ((int) ($seat['user_id'] ?? -1) === $userId) return (int) $idx;
+        }
+        return -1;
+    }
+
+    // ── Auto join toggle (host only) ──────────────────────────────────────────
+    private static function handleAutoJoin(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId = $conn['room_id'];
+        $room   = \App\Models\Room::find($roomId);
+        if (! $roomId || $room?->host_user_id !== $conn['user_id']) return;
+
+        $enabled = (bool) ($data['enabled'] ?? false);
+        Redis::set("room:{$roomId}:auto_join", $enabled ? '1' : '0');
+
+        static::broadcastToRoom($server, $roomId, [
+            'type'    => 'room.auto_join',
+            'enabled' => $enabled,
+        ]);
+    }
+
+    // ── Increase seat count (host only, only increase) ────────────────────────
+    private static function handleSeatCount(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId   = $conn['room_id'];
+        $room     = \App\Models\Room::find($roomId);
+        if (! $roomId || $room?->host_user_id !== $conn['user_id']) return;
+
+        $newCount     = (int) ($data['seat_count'] ?? 8);
+        $newCount     = min(max($newCount, 2), 16);
+        $currentCount = (int) (Redis::get("room:{$roomId}:seat_count") ?? $room->seat_count ?? 8);
+
+        if ($newCount <= $currentCount) return; // only increase
+
+        Redis::set("room:{$roomId}:seat_count", $newCount);
+        \App\Models\Room::where('id', $roomId)->update(['seat_count' => $newCount]);
+
+        // Init new empty seats in Redis
+        for ($i = $currentCount; $i < $newCount; $i++) {
+            $existing = Redis::hget("room:{$roomId}:seats", $i);
+            if (! $existing) {
+                Redis::hset("room:{$roomId}:seats", $i, json_encode([
+                    'index'     => $i,
+                    'user_id'   => null,
+                    'username'  => null,
+                    'avatar'    => null,
+                    'is_locked' => false,
+                    'is_muted'  => false,
+                    'agora_uid' => null,
+                ]));
+            }
+        }
+
+        static::broadcastToRoom($server, $roomId, [
+            'type'       => 'room.seat_count',
+            'seat_count' => $newCount,
+        ]);
+    }
+
+    // ── Auto-take seat (no host approval when auto_join=on) ───────────────────
+    private static function handleSeatAutoTake(Server $server, int $fd, array $conn, array $data): void
+    {
+        $roomId    = $conn['room_id'];
+        $seatIndex = (int) ($data['seat_index'] ?? -1);
+        if (! $roomId || $seatIndex < 0) return;
+
+        if (Redis::get("room:{$roomId}:auto_join") !== '1') {
+            static::handleSeatRequest($server, $fd, $conn, $data);
+            return;
+        }
+
+        // Atomic seat claim with SET NX to prevent race conditions
+        $claimKey = "room:{$roomId}:seat_claim:{$seatIndex}";
+        $claimed  = Redis::set($claimKey, $conn['user_id'], 'EX', 5, 'NX');
+
+        if (! $claimed) {
+            $server->push($fd, json_encode(['type' => 'seat.rejected', 'seat_index' => $seatIndex]));
+            return;
+        }
+
+        $existing = Redis::hget("room:{$roomId}:seats", $seatIndex);
+        if ($existing) {
+            $seat = json_decode($existing, true);
+            if (isset($seat['user_id']) || ($seat['is_locked'] ?? false)) {
+                Redis::del($claimKey);
+                $server->push($fd, json_encode(['type' => 'seat.rejected', 'seat_index' => $seatIndex]));
+                return;
+            }
+        }
+
+        $agoraUid = time() + $fd;
+        $seatData = [
+            'index'     => $seatIndex,
+            'user_id'   => $conn['user_id'],
+            'username'  => $conn['username'],
+            'avatar'    => $conn['avatar'],
+            'frame_url' => $conn['frame_url'] ?? '',
+            'is_locked' => false,
+            'is_muted'  => false,
+            'agora_uid' => $agoraUid,
+        ];
+        Redis::hset("room:{$roomId}:seats", $seatIndex, json_encode($seatData));
+        Redis::del($claimKey);
+
+        $server->push($fd, json_encode([
+            'type'       => 'seat.accepted',
+            'seat_index' => $seatIndex,
+            'agora_uid'  => $agoraUid,
+        ]));
+
+        static::broadcastToRoom($server, $roomId, [
+            'type'       => 'seat.assigned',
+            'seat_index' => $seatIndex,
+            'user_id'    => $conn['user_id'],
+            'username'   => $conn['username'],
+            'avatar'     => $conn['avatar'],
+            'frame_url'  => $conn['frame_url'] ?? '',
+            'agora_uid'  => $agoraUid,
+        ]);
+    }
 
     private static function handleSeatEmoji(Server $server, int $fd, array $conn, array $data): void
     {

@@ -55,7 +55,13 @@ class LevelController extends Controller
         ];
 
         foreach ($tiers as $tier) {
-            $tierFrame = LevelFrame::forLevel($tier['min']);
+            // Show frame ONLY if its min_level falls within this tier's [min, max] range
+            // This prevents a frame from showing in multiple tier boxes
+            $tierFrame = LevelFrame::where('is_active', true)
+                ->where('min_level', '>=', $tier['min'])
+                ->where('min_level', '<=', $tier['max'])
+                ->orderByDesc('min_level')
+                ->first();
             $milestones[] = [
                 'min_level'     => $tier['min'],
                 'max_level'     => $tier['max'],

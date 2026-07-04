@@ -109,7 +109,7 @@ class LeaderboardController extends Controller
     {
         $userIds = $rows->pluck('user_id')->toArray();
         $users   = User::whereIn('id', $userIds)
-            ->get(['id', 'username', 'display_name', 'avatar_url', 'level', 'agency_id'])
+            ->get(['id', 'username', 'display_name', 'avatar_url', 'frame_url', 'level', 'agency_id'])
             ->keyBy('id');
 
         return $rows->map(function ($row) use ($users, $scoreKey) {
@@ -119,6 +119,7 @@ class LeaderboardController extends Controller
                 'username'       => $user?->username ?? 'Unknown',
                 'display_name'   => $user?->display_name ?? $user?->username ?? 'Unknown',
                 'avatar_url'     => $user?->avatar_url,
+                'frame_url'      => $user?->frame_url,
                 'level'          => $user?->level ?? 1,
                 'agency_id'      => $user?->agency_id,
                 'score'          => (int) $row->$scoreKey,

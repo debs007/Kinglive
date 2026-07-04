@@ -11,7 +11,7 @@
 
 <div class="card">
   <div class="table-responsive">
-    <table class="table mb-0">
+    <table class="table mb-0" style="background:transparent;color:#fff">
       <thead>
         <tr>
           <th class="text-muted small">User</th>
@@ -21,10 +21,10 @@
           <th class="text-muted small">Actions</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody style="background:var(--bg2,#1A0A2E)">
         @forelse($requests as $req)
         <tr>
-          <td>
+          <td style="border-color:rgba(255,255,255,0.1);color:#fff;background:transparent">
             <div class="d-flex align-items-center gap-2">
               @if($req->user?->avatar_url)
                 <img src="{{ $req->user->avatar_url }}" class="avatar">
@@ -46,7 +46,7 @@
               </div>
             </div>
           </td>
-          <td>
+          <td style="border-color:rgba(255,255,255,0.1);color:#fff;background:transparent">
             <span class="badge badge-{{ $req->status }} px-2 py-1 rounded-pill">
               {{ ucfirst($req->status) }}
             </span>
@@ -57,7 +57,7 @@
           <td class="text-muted small">
             {{ $req->responded_at?->diffForHumans() ?? '—' }}
           </td>
-          <td>
+          <td style="border-color:rgba(255,255,255,0.1);color:#fff;background:transparent">
             @if($req->status === 'pending')
               <div class="d-flex gap-2">
                 <form action="{{ route('agency.requests.approve', $req->id) }}"

@@ -54,6 +54,22 @@
             <div class="form-group">
                 <label>Diamond → USD Rate <small style="color:var(--text3)">(e.g. 0.001 = 1000 diamonds = $1)</small></label>
                 <input type="number" name="diamond_usd_rate" value="{{ setting('diamond_usd_rate', 0.001) }}" step="0.0001" min="0.0001">
+
+            <div class="row mb-3 align-items-center">
+                <label class="col-sm-3 col-form-label fw-semibold" style="color:var(--text)">Diamond Exchange</label>
+                <div class="col-sm-9">
+                    <div class="form-check form-switch" style="padding-left:2.5rem">
+                        <input class="form-check-input" type="checkbox" name="exchange_enabled" value="1"
+                               id="exchangeToggle"
+                               {{ setting('exchange_enabled', '1') === '1' ? 'checked' : '' }}
+                               style="width:3rem;height:1.5rem;cursor:pointer">
+                        <label class="form-check-label ms-2" for="exchangeToggle" style="color:var(--text3);line-height:1.8">
+                            Allow users to convert diamonds to coins
+                        </label>
+                    </div>
+                    <small style="color:var(--text3)">When disabled, users see an error when trying to exchange.</small>
+                </div>
+            </div>
             </div>
         </div>
 

@@ -30,6 +30,13 @@ class ExchangeController extends Controller
 
     public function exchange(Request $request): JsonResponse
     {
+        if (\App\Models\Setting::get('exchange_enabled', '1') === '0') {
+            return response()->json([
+                'message' => 'Diamond exchange is currently disabled.',
+                'code'    => 'exchange_disabled',
+            ], 403);
+        }
+
         $request->validate([
             'diamonds' => ['required', 'integer', 'min:' . self::MIN_EXCHANGE], // 50,000
         ]);

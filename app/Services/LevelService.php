@@ -229,18 +229,78 @@ class LevelService
      * Update user level after sending coins.
      * Returns new level if it changed, null if unchanged.
      */
+    // Tier boundary levels — when crossing one of these, auto-grant the level frame
+    public static array $tierBoundaries = [1, 20, 40, 60, 80, 100, 120, 140, 160];
+
     public static function updateUserLevel(\App\Models\User $user, int $coinsSpent): ?int
     {
+        $oldLevel = (int) $user->level;
         $user->increment('total_coins_sent', $coinsSpent);
         $user->refresh();
 
         $newLevel = static::calculate($user->total_coins_sent);
 
-        if ($newLevel > $user->level) {
+        if ($newLevel > $oldLevel) {
             $user->update(['level' => $newLevel]);
+
+            // Check if user crossed a tier boundary — auto-grant level frame
+            foreach (static::$tierBoundaries as $boundary) {
+                if ($oldLevel < $boundary && $newLevel >= $boundary) {
+                    static::grantTierFrame($user, $boundary);
+                }
+            }
+
             return $newLevel;
         }
 
         return null;
+    }
+
+    /**
+     * Auto-grant the LevelFrame for a tier to the user's inventory and apply it.
+     * Creates a matching Frame record if one doesn't exist yet.
+     */
+    private static function grantTierFrame(\App\Models\User $user, int $tierMin): void
+    {
+        // Find the tier's max from $tierBoundaries
+        $boundaries  = static::$tierBoundaries;
+        $idx         = array_search($tierMin, $boundaries);
+        $tierMax     = ($idx !== false && isset($boundaries[$idx + 1]))
+            ? $boundaries[$idx + 1] - 1
+            : 999;
+
+        // Find the LevelFrame for this tier
+        $levelFrame = \App\Models\LevelFrame::where('is_active', true)
+            ->where('min_level', '>=', $tierMin)
+            ->where('min_level', '<=', $tierMax)
+            ->orderBy('min_level')
+            ->first();
+
+        if (! $levelFrame) return;
+
+        // Find or create a matching Frame record (keyed by svga_url)
+        $frame = \App\Models\Frame::firstOrCreate(
+            ['svga_url' => $levelFrame->svga_url],
+            [
+                'name'          => $levelFrame->name,
+                'thumbnail_url' => $levelFrame->thumbnail_url,
+                'price'         => 0,
+                'is_active'     => true,
+                'sort_order'    => 9999,
+            ]
+        );
+
+        // Add to user's inventory if not already there
+        \App\Models\UserFrame::firstOrCreate(
+            ['user_id' => $user->id, 'frame_id' => $frame->id],
+            ['source'  => 'level_up']
+        );
+
+        // Auto-apply — new tier frame replaces the old one automatically
+        $user->update(['frame_url' => $levelFrame->svga_url]);
+
+        \Illuminate\Support\Facades\Log::info(
+            "LevelFrame granted: user={$user->id} tier={$tierMin} frame={$frame->id}"
+        );
     }
 }

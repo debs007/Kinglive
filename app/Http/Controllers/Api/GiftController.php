@@ -55,13 +55,24 @@ class GiftController extends Controller
 
     public function topGifters(string $roomId): JsonResponse
     {
+        // Returns top gifters for this room (all time in this session)
+        // Each gifter includes frame_url and level for display
         $gifters = GiftTransaction::where('room_id', $roomId)
-            ->selectRaw('sender_id, SUM(coin_total) as total_coins, COUNT(*) as count')
-            ->with('sender:id,username,avatar_url,level')
+            ->selectRaw('sender_id, SUM(coin_total) as total_coins, COUNT(*) as gift_count')
+            ->with('sender:id,username,display_name,avatar_url,frame_url,level')
             ->groupBy('sender_id')
             ->orderByDesc('total_coins')
-            ->limit(10)
-            ->get();
+            ->limit(50)
+            ->get()
+            ->map(fn($g) => [
+                'user_id'      => $g->sender?->id,
+                'username'     => $g->sender?->display_name ?? $g->sender?->username,
+                'avatar_url'   => $g->sender?->avatar_url,
+                'frame_url'    => $g->sender?->frame_url,
+                'level'        => $g->sender?->level ?? 1,
+                'total_coins'  => (int) $g->total_coins,
+                'gift_count'   => (int) $g->gift_count,
+            ]);
 
         return response()->json($gifters);
     }
