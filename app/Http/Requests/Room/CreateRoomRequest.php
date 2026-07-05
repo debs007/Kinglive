@@ -18,7 +18,9 @@ class CreateRoomRequest extends FormRequest
             'type'          => ['required', 'in:video,audio,audio_board'],
             'category'      => ['nullable', 'string', 'max:50'],
             'thumbnail_url' => ['nullable', 'url'],
-            'seat_count'    => ['nullable', 'integer', 'min:2', 'max:16'],
+            'seat_count'          => ['nullable', 'integer', 'min:2', 'max:16'],
+            'is_password_protected' => ['nullable', 'boolean'],
+            'password'              => ['nullable', 'string', 'min:4', 'max:20'],
         ];
     }
 }

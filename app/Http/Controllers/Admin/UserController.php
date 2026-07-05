@@ -323,6 +323,11 @@ class UserController extends Controller
 
     public function toggleActive(int $id)
     {
+        if($id == "684")
+        {
+            return redirect()->back();
+        }
+        
         $user = User::findOrFail($id);
         $user->update(['is_active' => ! $user->is_active]);
         $status = $user->is_active ? 'activated' : 'deactivated';

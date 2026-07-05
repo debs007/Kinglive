@@ -201,9 +201,16 @@ class DirectMessageController extends Controller
         ]);
         $presigned = $client->createPresignedRequest($cmd, '+15 minutes');
 
+        // Use CDN URL for audio delivery — ensures proper streaming + CORS
+        $cdnBase  = config('filesystems.disks.s3.cdn_url');
+        $audioUrl = $cdnBase
+            ? rtrim($cdnBase, '/') . '/' . $key
+            : \Illuminate\Support\Facades\Storage::disk('s3')->url($key);
+
         return response()->json([
             'upload_url' => (string) $presigned->getUri(),
-            'audio_url'  => \Illuminate\Support\Facades\Storage::disk('s3')->url($key),
+            'audio_url'  => $audioUrl,
+            'cdn_url'    => $audioUrl, // Flutter reads either key
             'key'        => $key,
         ]);
     }
@@ -360,6 +367,8 @@ class DirectMessageController extends Controller
                 'type'            => 'dm_message',
                 'conversation_id' => (string) $conversationId,
                 'sender_id'       => (string) $myId,
+                'sender_avatar'   => $sender->avatar_url ?? '',
+                'msg_type'        => $type, // text | image | voice | gift
             ];
             app(NotificationService::class)->sendToUser(
                 $receiverId,

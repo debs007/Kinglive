@@ -79,18 +79,25 @@ class RoomController extends Controller
         $channelId  = 'room_'.Str::uuid()->toString();
         $agoraToken = $this->agora->generateToken($channelId, $user->id);
 
+        $isPrivate = (bool) ($request->is_password_protected ?? false);
+        $password  = $isPrivate && $request->password
+            ? bcrypt($request->password)   // hash for storage
+            : null;
+
         $room = Room::create([
-            'id'               => Str::uuid(),
-            'host_user_id'     => $user->id,
-            'title'            => $request->title,
-            'type'             => $request->type,
-            'category'         => $request->category,
-            'thumbnail_url'    => $request->thumbnail_url ?? $user->avatar_url,
-            'seat_count'       => $request->seat_count ?? ($request->type === 'audio_board' ? 16 : 8),
-            'agora_channel_id' => $channelId,
-            'agora_token'      => $agoraToken,
-            'status'           => 'live',
-            'started_at'       => now(),
+            'id'                   => Str::uuid(),
+            'host_user_id'         => $user->id,
+            'title'                => $request->title,
+            'type'                 => $request->type,
+            'category'             => $request->category,
+            'thumbnail_url'        => $request->thumbnail_url ?? $user->avatar_url,
+            'seat_count'           => $request->seat_count ?? ($request->type === 'audio_board' ? 16 : 8),
+            'agora_channel_id'     => $channelId,
+            'agora_token'          => $agoraToken,
+            'status'               => 'live',
+            'started_at'           => now(),
+            'is_password_protected' => $isPrivate,
+            'password'             => $password,
         ]);
 
         if ($request->type === 'audio_board') {
@@ -100,9 +107,11 @@ class RoomController extends Controller
         NotifyFollowersLiveJob::dispatch($user->id, $room->id, $room->title);
 
         return response()->json([
-            'room'        => $room->load('host'),
-            'agora_token' => $agoraToken,
-            'channel_id'  => $channelId,
+            'room'              => $room->load('host'),
+            'agora_token'       => $agoraToken,
+            'channel_id'        => $channelId,
+            // Return plain password to host so they can display it in room
+            'room_password'     => $isPrivate ? $request->password : null,
         ], 201);
     }
 
@@ -126,6 +135,11 @@ class RoomController extends Controller
         );
 
         $liveViewerCount = $this->roomService->getViewerCount($roomId);
+
+        // Hide password hash — only return if host is viewing their own room
+        if ($userId !== $room->host_user_id) {
+            $room->makeHidden(['password']);
+        }
 
         return response()->json([
             'room'                  => $room,
@@ -194,6 +208,31 @@ class RoomController extends Controller
             'message'       => 'Room ended.',
             'duration_mins' => $durationMins,
             'summary'       => $this->roomService->getSummary($room),
+        ]);
+    }
+
+    public function verifyPassword(string $roomId, Request $request): JsonResponse
+    {
+        $request->validate(['password' => ['required', 'string']]);
+        $room = Room::findOrFail($roomId);
+
+        if (! $room->is_password_protected) {
+            return response()->json(['verified' => true]);
+        }
+
+        if (! \Hash::check($request->password, $room->password ?? '')) {
+            return response()->json(['message' => 'Incorrect password.'], 422);
+        }
+
+        // Issue a short-lived token so Flutter can join without re-entering password
+        $token = \Illuminate\Support\Str::random(32);
+        \Illuminate\Support\Facades\Redis::setex(
+            "room:{$roomId}:pwd_token:{$token}", 300, auth()->id()
+        );
+
+        return response()->json([
+            'verified'     => true,
+            'access_token' => $token,
         ]);
     }
 
