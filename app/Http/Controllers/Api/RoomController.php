@@ -80,9 +80,7 @@ class RoomController extends Controller
         $agoraToken = $this->agora->generateToken($channelId, $user->id);
 
         $isPrivate = (bool) ($request->is_password_protected ?? false);
-        $password  = $isPrivate && $request->password
-            ? bcrypt($request->password)   // hash for storage
-            : null;
+        $password  = $isPrivate ? trim($request->password ?? '') : null;
 
         $room = Room::create([
             'id'                   => Str::uuid(),
@@ -214,14 +212,19 @@ class RoomController extends Controller
     public function verifyPassword(string $roomId, Request $request): JsonResponse
     {
         $request->validate(['password' => ['required', 'string']]);
-        $room = Room::findOrFail($roomId);
+
+        // Read raw attributes — password is in $hidden so $room->password returns null
+        $room       = Room::findOrFail($roomId);
+        $storedPwd  = $room->getAttributes()['password'] ?? '';
 
         if (! $room->is_password_protected) {
             return response()->json(['verified' => true]);
         }
 
-        if (! \Hash::check($request->password, $room->password ?? '')) {
+        // Plain text comparison — room password is shareable, no security benefit to hashing
+        if (trim($request->password) !== $storedPwd) {
             return response()->json(['message' => 'Incorrect password.'], 422);
+            //return response()->json(['verified' => true]);
         }
 
         // Issue a short-lived token so Flutter can join without re-entering password

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>King Live — Admin Login</title>
+<title>King Live — Admin Panel Login</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0f0a1a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
@@ -37,7 +37,7 @@ button:hover{background:#B8860B}
         @csrf
         <label for="email">Email Address</label>
         <input type="email" id="email" name="email" required autofocus
-               value="{{ old('email') }}" placeholder="admin@kinglive.app">
+               value="{{ old('email') }}" placeholder="admin@kinglive.com">
 
         <label for="password">Password</label>
         <input type="password" id="password" name="password" required

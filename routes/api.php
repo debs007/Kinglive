@@ -113,7 +113,8 @@ Route::prefix('v1')->group(function () {
         Route::get   ('rooms/{id}',          [RoomController::class, 'show']);
         Route::post  ('rooms/{id}/end',      [RoomController::class, 'end']);
         Route::post  ('rooms/{id}/heartbeat',[RoomController::class, 'heartbeat']);
-        Route::post  ('rooms/{id}/token',    [RoomController::class, 'refreshToken']);
+        Route::post  ('rooms/{id}/token',           [RoomController::class, 'refreshToken']);
+        Route::post  ('rooms/{id}/verify-password',  [RoomController::class, 'verifyPassword']);
         Route::get   ('rooms/{id}/viewers',  [RoomController::class, 'viewers']);
 
         // Gifts
