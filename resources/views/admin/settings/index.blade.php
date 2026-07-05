@@ -55,21 +55,87 @@
                 <label>Diamond → USD Rate <small style="color:var(--text3)">(e.g. 0.001 = 1000 diamonds = $1)</small></label>
                 <input type="number" name="diamond_usd_rate" value="{{ setting('diamond_usd_rate', 0.001) }}" step="0.0001" min="0.0001">
 
-            <div class="row mb-3 align-items-center">
-                <label class="col-sm-3 col-form-label fw-semibold" style="color:var(--text)">Diamond Exchange</label>
-                <div class="col-sm-9">
-                    <div class="form-check form-switch" style="padding-left:2.5rem">
-                        <input class="form-check-input" type="checkbox" name="exchange_enabled" value="1"
-                               id="exchangeToggle"
-                               {{ setting('exchange_enabled', '1') === '1' ? 'checked' : '' }}
-                               style="width:3rem;height:1.5rem;cursor:pointer">
-                        <label class="form-check-label ms-2" for="exchangeToggle" style="color:var(--text3);line-height:1.8">
-                            Allow users to convert diamonds to coins
-                        </label>
+            {{-- Feature Toggles --}}
+            <div style="display:flex;flex-direction:column;gap:12px;margin-top:20px">
+
+                {{-- Exchange Toggle --}}
+                @php $exchangeOn = setting('exchange_enabled', '1') === '1'; @endphp
+                <div class="feature-card" style="
+                    display:flex;align-items:center;justify-content:space-between;
+                    background:var(--surface2,#1e1040);
+                    border:1.5px solid {{ $exchangeOn ? '#9B59B6' : 'rgba(255,255,255,0.08)' }};
+                    border-radius:12px;padding:14px 18px;transition:border-color .2s">
+                    <div style="display:flex;align-items:center;gap:14px">
+                        <div style="width:42px;height:42px;border-radius:10px;
+                            background:{{ $exchangeOn ? 'rgba(155,89,182,0.2)' : 'rgba(255,255,255,0.05)' }};
+                            display:flex;align-items:center;justify-content:center;font-size:20px">💱</div>
+                        <div>
+                            <div style="color:var(--text);font-weight:600;font-size:14px">Diamond Exchange</div>
+                            <div style="color:var(--text3);font-size:12px;margin-top:2px">Allow users to convert diamonds → coins</div>
+                        </div>
                     </div>
-                    <small style="color:var(--text3)">When disabled, users see an error when trying to exchange.</small>
+                    <label style="cursor:pointer;position:relative;width:52px;height:28px;flex-shrink:0;display:block">
+                        <input type="checkbox" name="exchange_enabled" value="1"
+                               {{ $exchangeOn ? 'checked' : '' }}
+                               data-active-color="#9B59B6"
+                               style="opacity:0;width:0;height:0;position:absolute">
+                        <span class="ftoggle-track" style="position:absolute;inset:0;
+                            background:{{ $exchangeOn ? '#9B59B6' : 'rgba(255,255,255,0.15)' }};
+                            border-radius:28px;transition:background .25s">
+                            <span class="ftoggle-knob" style="position:absolute;top:3px;
+                                left:{{ $exchangeOn ? 'calc(100% - 25px)' : '3px' }};
+                                width:22px;height:22px;border-radius:50%;
+                                background:#fff;transition:left .25s;box-shadow:0 1px 4px rgba(0,0,0,.3)"></span>
+                        </span>
+                    </label>
                 </div>
+
+                {{-- Daily Reward Toggle --}}
+                @php $rewardOn = setting('daily_reward_enabled', '1') === '1'; @endphp
+                <div class="feature-card" style="
+                    display:flex;align-items:center;justify-content:space-between;
+                    background:var(--surface2,#1e1040);
+                    border:1.5px solid {{ $rewardOn ? '#F39C12' : 'rgba(255,255,255,0.08)' }};
+                    border-radius:12px;padding:14px 18px;transition:border-color .2s">
+                    <div style="display:flex;align-items:center;gap:14px">
+                        <div style="width:42px;height:42px;border-radius:10px;
+                            background:{{ $rewardOn ? 'rgba(243,156,18,0.2)' : 'rgba(255,255,255,0.05)' }};
+                            display:flex;align-items:center;justify-content:center;font-size:20px">🎁</div>
+                        <div>
+                            <div style="color:var(--text);font-weight:600;font-size:14px">Daily Live Reward</div>
+                            <div style="color:var(--text3);font-size:12px;margin-top:2px">Allow hosts to collect 5,000 💎 after 40+ min live</div>
+                        </div>
+                    </div>
+                    <label style="cursor:pointer;position:relative;width:52px;height:28px;flex-shrink:0;display:block">
+                        <input type="checkbox" name="daily_reward_enabled" value="1"
+                               {{ $rewardOn ? 'checked' : '' }}
+                               data-active-color="#F39C12"
+                               style="opacity:0;width:0;height:0;position:absolute">
+                        <span class="ftoggle-track" style="position:absolute;inset:0;
+                            background:{{ $rewardOn ? '#F39C12' : 'rgba(255,255,255,0.15)' }};
+                            border-radius:28px;transition:background .25s">
+                            <span class="ftoggle-knob" style="position:absolute;top:3px;
+                                left:{{ $rewardOn ? 'calc(100% - 25px)' : '3px' }};
+                                width:22px;height:22px;border-radius:50%;
+                                background:#fff;transition:left .25s;box-shadow:0 1px 4px rgba(0,0,0,.3)"></span>
+                        </span>
+                    </label>
+                </div>
+
             </div>
+            <script>
+            document.querySelectorAll('.feature-card input[type=checkbox]').forEach(function(cb) {
+                cb.addEventListener('change', function() {
+                    var card  = this.closest('.feature-card');
+                    var track = this.nextElementSibling;
+                    var knob  = track.querySelector('.ftoggle-knob');
+                    var color = this.dataset.activeColor || '#9B59B6';
+                    track.style.background    = this.checked ? color : 'rgba(255,255,255,0.15)';
+                    knob.style.left           = this.checked ? 'calc(100% - 25px)' : '3px';
+                    card.style.borderColor    = this.checked ? color : 'rgba(255,255,255,0.08)';
+                });
+            });
+            </script>
             </div>
         </div>
 

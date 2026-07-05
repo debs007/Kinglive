@@ -108,6 +108,9 @@ class DailyRewardController extends Controller
 
     public function collect(Request $request): JsonResponse
     {
+        if (\App\Models\Setting::get('daily_reward_enabled', '1') === '0') {
+            return response()->json(['message' => 'Daily reward is currently disabled.'], 403);
+        }
         $request->validate(['date' => ['required', 'date_format:Y-m-d']]);
 
         $date  = $request->input('date');

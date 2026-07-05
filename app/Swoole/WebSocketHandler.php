@@ -296,27 +296,19 @@ class WebSocketHandler
             'viewer_count' => $currentViewerCount,
         ]));
 
-        $allSeats = Redis::hgetall("room:{$roomId}:seats") ?: [];
-        foreach ($allSeats as $seatIdx => $seatJson) {
-            $seatData = json_decode($seatJson, true);
-            if (! isset($seatData['user_id'])) continue;
-            $seatUserId = (int) $seatData['user_id'];
-            $seatFd     = static::getFdByUserId($seatUserId);
-            if (! $seatFd || ! $server->isEstablished($seatFd)) {
-                Redis::hdel("room:{$roomId}:seats", $seatIdx);
-                static::broadcastToRoom($server, $roomId, ['type' => 'seat.vacated', 'seat_index' => (int) $seatIdx]);
-            }
-        }
+        // NOTE: Do NOT clear seats here — late joiners must see current occupants.
+        // Stale seat cleanup is handled by CleanupStaleRoomsJob and onClose handlers.
+        // Clearing seats on join causes new joiners to see empty audio boards.
 
         $chatRaw             = Redis::zrange("room:{$roomId}:chat", -50, -1);
         $chat                = array_map(fn ($c) => json_decode($c, true), $chatRaw);
         $callParticipantsRaw = Redis::hgetall("call:{$roomId}:participants") ?: [];
-        // Only include participants whose WS is still connected
-        // ws_disconnected ones are kept in Redis for 30s reconnect window
-        // but new joiners should NOT see them — they'd see a ghost tile
+        // Include all call participants for late joiners.
+        // Agora manages audio/video independently of WS — participants stay in call
+        // even during brief WS reconnects. Only exclude if explicitly removed.
         $callParticipants = array_values(array_filter(
             array_map(fn ($p) => json_decode($p, true), $callParticipantsRaw),
-            fn ($p) => empty($p['ws_disconnected'])
+            fn ($p) => $p !== null && empty($p['left'])
         ));
 
         // Include current background so new joiners see it immediately
@@ -354,11 +346,12 @@ class WebSocketHandler
         $seatCount = (int) (Redis::get("room:{$roomId}:seat_count") ?? $room?->seat_count ?? 8);
 
         // Get seat gift totals for audio board late joiners
-        $seatGiftKeys  = Redis::keys("room:{$roomId}:seat_gifts:*");
-        $seatGiftTotals = [];
+        // Use stdClass so empty result encodes as {} not [] in JSON
+        $seatGiftKeys   = Redis::keys("room:{$roomId}:seat_gifts:*");
+        $seatGiftTotals = new \stdClass();
         foreach ($seatGiftKeys as $key) {
-            $userId = (int) str_replace("room:{$roomId}:seat_gifts:", '', $key);
-            $seatGiftTotals[$userId] = (int) Redis::get($key);
+            $userId = (string) str_replace("room:{$roomId}:seat_gifts:", '', $key);
+            $seatGiftTotals->$userId = (int) Redis::get($key);
         }
 
         // Get host frame_url — from live connection or DB fallback
@@ -582,6 +575,7 @@ class WebSocketHandler
 
         static::broadcastToRoom($server, $roomId, [
             'type'     => 'chat.message',
+            'room_id'  => $roomId,        // ← needed so Flutter can filter by room
             'user_id'  => $conn['user_id'],
             'username' => $conn['username'],
             'avatar'   => $conn['avatar'],
@@ -701,8 +695,9 @@ class WebSocketHandler
 
             Redis::hset("room:{$roomId}:seats", $seatIndex, json_encode([
                 'user_id'   => $userId,
-                'username'  => static::$connections[$targetFd]['username'] ?? '',
-                'avatar'    => static::$connections[$targetFd]['avatar'] ?? '',
+                'username'  => static::$connections[$targetFd]['username']  ?? '',
+                'avatar'    => static::$connections[$targetFd]['avatar']    ?? '',
+                'frame_url' => static::$connections[$targetFd]['frame_url'] ?? '', // for late joiners
                 'agora_uid' => $agoraUid,
             ]));
 

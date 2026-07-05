@@ -198,6 +198,7 @@ class DirectMessageController extends Controller
             'Bucket'      => config('filesystems.disks.s3.bucket'),
             'Key'         => $key,
             'ContentType' => 'audio/' . $ext,
+            'ACL'         => 'public-read', // must be readable by recipient
         ]);
         $presigned = $client->createPresignedRequest($cmd, '+15 minutes');
 
@@ -370,11 +371,14 @@ class DirectMessageController extends Controller
                 'sender_avatar'   => $sender->avatar_url ?? '',
                 'msg_type'        => $type, // text | image | voice | gift
             ];
-            app(NotificationService::class)->sendToUser(
+            // Use data-only FCM so FirebaseMessaging.onMessage fires in foreground
+            // This is what shows the in-app banner overlay in Flutter
+            app(NotificationService::class)->sendDataOnlyToUser(
                 $receiverId,
-                $notifTitle,
-                $notifBody,
-                $notifData
+                array_merge($notifData, [
+                    'title' => $notifTitle,
+                    'body'  => $notifBody,
+                ])
             );
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::warning('DM push notification failed: ' . $e->getMessage());

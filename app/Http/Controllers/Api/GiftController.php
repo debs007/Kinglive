@@ -53,6 +53,43 @@ class GiftController extends Controller
         ]);
     }
 
+    // ── Monthly / weekly gifters to a specific host ──────────────────────────
+    // GET /users/{hostId}/gifters?period=monthly|weekly&page=1
+    public function hostGifters(string $hostId, Request $request): JsonResponse
+    {
+        $period = $request->query('period', 'monthly'); // monthly | weekly
+        $perPage = 20;
+
+        $from = match ($period) {
+            'weekly'  => now()->startOfWeek(),
+            default   => now()->startOfMonth(),
+        };
+        $to = now();
+
+        $gifters = GiftTransaction::where('receiver_id', $hostId)
+            ->whereBetween('created_at', [$from, $to])
+            ->selectRaw('sender_id, SUM(diamond_total) as total_diamonds, COUNT(*) as gift_count')
+            ->with('sender:id,username,display_name,avatar_url,frame_url,level')
+            ->groupBy('sender_id')
+            ->orderByDesc('total_diamonds')
+            ->paginate($perPage);
+
+        return response()->json([
+            'data'          => $gifters->map(fn($g) => [
+                'user_id'        => $g->sender?->id,
+                'username'       => $g->sender?->display_name ?? $g->sender?->username ?? 'Unknown',
+                'avatar_url'     => $g->sender?->avatar_url,
+                'frame_url'      => $g->sender?->frame_url,
+                'level'          => $g->sender?->level ?? 1,
+                'total_diamonds' => (int) $g->total_diamonds,
+                'gift_count'     => (int) $g->gift_count,
+            ])->values(),
+            'current_page'  => $gifters->currentPage(),
+            'last_page'     => $gifters->lastPage(),
+            'has_more'      => $gifters->hasMorePages(),
+        ]);
+    }
+
     public function topGifters(string $roomId): JsonResponse
     {
         // Returns top gifters for this room (all time in this session)

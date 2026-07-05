@@ -118,6 +118,52 @@ class NotificationService
         }
     }
 
+    /**
+     * Send data-only FCM — no system notification shown, always fires onMessage in foreground.
+     * Use for in-app DM notifications so Flutter's FirebaseMessaging.onMessage handles it.
+     */
+    public function sendDataOnlyToUser(int $userId, array $data): bool
+    {
+        $user = User::find($userId);
+        if (! $user?->device_token) return false;
+        return $this->sendFcmDataOnly([$user->device_token], $data);
+    }
+
+    private function sendFcmDataOnly(array $tokens, array $data): bool
+    {
+        if (empty($this->projectId) || empty($tokens)) return false;
+        $accessToken = $this->getAccessToken();
+        if (empty($accessToken)) return false;
+
+        $url = "https://fcm.googleapis.com/v1/projects/{$this->projectId}/messages:send";
+        $success = true;
+
+        foreach ($tokens as $token) {
+            try {
+                $response = Http::withHeaders([
+                    'Authorization' => 'Bearer ' . $accessToken,
+                    'Content-Type'  => 'application/json',
+                ])->post($url, [
+                    'message' => [
+                        'token'   => $token,
+                        // NO notification field — data-only, always hits onMessage
+                        'android' => ['priority' => 'high'],
+                        'apns'    => [
+                            'headers' => ['apns-priority' => '10'],
+                            'payload' => ['aps' => ['content-available' => 1]],
+                        ],
+                        'data' => array_map('strval', $data),
+                    ],
+                ]);
+                if (! $response->successful()) $success = false;
+            } catch (\Throwable $e) {
+                Log::error('FCM data-only error: ' . $e->getMessage());
+                $success = false;
+            }
+        }
+        return $success;
+    }
+
     private function sendFcm(array $tokens, string $title, string $body, array $data = []): bool
     {
         Log::info('FCM sendFcm called', [

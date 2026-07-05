@@ -120,7 +120,8 @@ Route::prefix('v1')->group(function () {
         // Gifts
         Route::get   ('gifts',                   [GiftController::class, 'index']);
         Route::post  ('gifts/send',              [GiftController::class, 'send']);
-        Route::get   ('gifts/room/{roomId}/top', [GiftController::class, 'topGifters']);
+        Route::get   ('gifts/room/{roomId}/top',    [GiftController::class, 'topGifters']);
+        Route::get   ('users/{hostId}/gifters',      [GiftController::class, 'hostGifters']);
         Route::get   ('gifts/history',           [GiftController::class, 'history']);
 
         // Games

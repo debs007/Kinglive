@@ -39,7 +39,8 @@ class SettingsController extends Controller
         }
 
         // Handle checkboxes explicitly — unchecked sends nothing, we save '0'
-        Setting::set('exchange_enabled', $request->has('exchange_enabled') ? '1' : '0');
+        Setting::set('exchange_enabled',    $request->has('exchange_enabled')    ? '1' : '0');
+        Setting::set('daily_reward_enabled', $request->has('daily_reward_enabled') ? '1' : '0');
 
         // Clear agora credentials cache so new values take effect immediately
         if ($request->hasAny(['agora_app_id', 'agora_app_certificate'])) {
